@@ -1,0 +1,913 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PvZ Roof Levels</title>
+<link href="https://fonts.googleapis.com/css2?family=Bangers&family=Nunito:wght@400;700;900&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0a0806;display:flex;justify-content:center;align-items:center;min-height:100vh;overflow:hidden;font-family:'Nunito',sans-serif}
+#wrap{position:relative;width:960px;height:640px}
+canvas{display:block;border-radius:8px;box-shadow:0 0 80px rgba(255,120,30,0.12),0 0 160px rgba(255,80,0,0.06)}
+#hud{position:absolute;top:8px;left:8px;right:8px;display:flex;align-items:center;gap:10px;pointer-events:none;z-index:10}
+.sun-box{background:linear-gradient(135deg,#2a1800,#1a0f00);border:2px solid #d4920a;border-radius:10px;padding:4px 14px;display:flex;align-items:center;gap:6px;color:#ffd700;font-family:'Bangers',cursive;font-size:26px;letter-spacing:1px;pointer-events:auto;min-width:80px}
+.sun-box span{color:#fff;font-size:18px}
+.wave-box{margin-left:auto;background:linear-gradient(135deg,#1a0a00,#2a1500);border:2px solid #c44;border-radius:10px;padding:4px 16px;color:#ff8866;font-family:'Bangers',cursive;font-size:20px;letter-spacing:1px}
+#overlay{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;align-items:center;background:rgba(5,3,0,0.88);z-index:20;border-radius:8px;transition:opacity 0.4s}
+#overlay.hidden{opacity:0;pointer-events:none}
+#overlay h1{font-family:'Bangers',cursive;font-size:56px;color:#ffd700;text-shadow:0 4px 20px rgba(255,180,0,0.4),0 0 60px rgba(255,120,0,0.2);letter-spacing:3px;margin-bottom:4px}
+#overlay h2{font-family:'Bangers',cursive;font-size:28px;color:#ff9944;margin-bottom:24px;font-weight:400}
+#overlay p{color:#ccaa88;font-size:15px;margin-bottom:20px;text-align:center;max-width:460px;line-height:1.6}
+.btn{font-family:'Bangers',cursive;font-size:26px;letter-spacing:2px;padding:12px 44px;border:none;border-radius:12px;cursor:pointer;transition:all 0.2s;color:#fff;background:linear-gradient(135deg,#e67e22,#d35400);box-shadow:0 4px 20px rgba(230,126,34,0.4)}
+.btn:hover{transform:translateY(-2px) scale(1.03);box-shadow:0 6px 30px rgba(230,126,34,0.6)}
+.btn:active{transform:scale(0.97)}
+.toast{position:absolute;top:60px;left:50%;transform:translateX(-50%);background:rgba(180,40,20,0.92);color:#fff;padding:8px 20px;border-radius:8px;font-size:14px;font-weight:700;z-index:15;pointer-events:none;opacity:0;transition:opacity 0.3s}
+.toast.show{opacity:1}
+</style>
+</head>
+<body>
+<div id="wrap">
+<canvas id="c" width="960" height="640"></canvas>
+<div id="hud">
+  <div class="sun-box"><span>☀</span><span id="sunTxt">150</span></div>
+  <div class="wave-box" id="waveTxt">Wave 0/5</div>
+</div>
+<div id="overlay">
+  <h1>ROOF DEFENSE</h1>
+  <h2>Plants vs Zombies — Night Roof</h2>
+  <p>The zombies are climbing the roof! Your catapult plants lob projectiles from their leafy arms. Collect sun to grow your defenses.</p>
+  <button class="btn" id="startBtn">START GAME</button>
+</div>
+<div class="toast" id="toast"></div>
+</div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const W = 960, H = 640;
+const GRID = { rows: 5, cols: 9, left: 215, top: 95, w: 78, h: 98 };
+
+let state = 'menu', sun = 150, wave = 0, totalWaves = 5;
+let nextSpawnTimer = 0, waveActive = false;
+let nextWaveDelay = 1200, frameCount = 0;
+let selectedCard = null, shovelMode = false;
+let plants = [], zombies = [], bullets = [], suns = [], particles = [], splashes = [], lawnMowers = [];
+
+// Wave spawning: flat list of zombie types, spawned one at a time
+let waveSpawnList = [];
+let waveSpawnIndex = 0;
+
+const PLANT_DEFS = {
+  catapult:   { cost:100, hp:300,  cd:420,  color:'#4caf50', name:'Cabbage-pult' },
+  sunflower:  { cost:50,  hp:300,  cd:420,  color:'#ffd700', name:'Sunflower' },
+  wallnut:    { cost:50,  hp:2000, cd:1200, color:'#a0522d', name:'Wall-nut' },
+  wintermelon:{ cost:200, hp:300,  cd:420,  color:'#26a69a', name:'Winter Melon' },
+  kernel:     { cost:100, hp:300,  cd:420,  color:'#ffb74d', name:'Kernel-pult' }
+};
+const PLANT_ORDER = ['sunflower','catapult','wallnut','wintermelon','kernel'];
+
+const ZOMBIE_DEFS = {
+  normal:  { hp:200,  speed:0.28 },
+  cone:    { hp:560,  speed:0.28 },
+  bucket:  { hp:1100, speed:0.25 },
+  flag:    { hp:200,  speed:0.42 }
+};
+
+const WAVE_DATA = [
+  [{t:'normal',n:3}],
+  [{t:'normal',n:4},{t:'cone',n:2}],
+  [{t:'normal',n:5},{t:'cone',n:3},{t:'flag',n:1}],
+  [{t:'normal',n:4},{t:'cone',n:4},{t:'bucket',n:2}],
+  [{t:'normal',n:6},{t:'cone',n:5},{t:'bucket',n:4},{t:'flag',n:2}]
+];
+
+let cards = PLANT_ORDER.map((type, i) => ({
+  type, ...PLANT_DEFS[type], cooldown: 0, index: i
+}));
+
+function gridPos(row, col) {
+  return { x: GRID.left + col * GRID.w + GRID.w / 2, y: GRID.top + row * GRID.h + GRID.h / 2 + 8 };
+}
+function toGrid(mx, my) {
+  let col = Math.floor((mx - GRID.left) / GRID.w);
+  let row = Math.floor((my - GRID.top) / GRID.h);
+  if (row < 0 || row >= GRID.rows || col < 0 || col >= GRID.cols) return null;
+  return { row, col };
+}
+function plantAt(row, col) { return plants.find(p => p.row === row && p.col === col); }
+function rand(a, b) { return a + Math.random() * (b - a); }
+function randInt(a, b) { return Math.floor(rand(a, b + 1)); }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function dist(x1, y1, x2, y2) { return Math.hypot(x2 - x1, y2 - y1); }
+
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 1800);
+}
+
+function spawnParticles(x, y, color, count, sr, vr) {
+  for (let i = 0; i < count; i++) {
+    let a = rand(0, Math.PI * 2), s = rand(vr[0], vr[1]);
+    particles.push({ x, y, vx: Math.cos(a)*s, vy: Math.sin(a)*s - rand(0.5,1.5), life: rand(20,50), maxLife: 50, color, size: rand(sr[0],sr[1]) });
+  }
+}
+function spawnSplash(x, y, color) {
+  splashes.push({ x, y, color, life: 25, maxLife: 25 });
+  spawnParticles(x, y, color, 8, [2,5], [1.5,4]);
+}
+
+function initGame() {
+  sun=150; wave=0; waveSpawnList=[]; waveSpawnIndex=0;
+  waveActive=false; nextSpawnTimer=0;
+  nextWaveDelay=1200; frameCount=0; selectedCard=null; shovelMode=false;
+  plants=[]; zombies=[]; bullets=[]; suns=[]; particles=[]; splashes=[]; lawnMowers=[];
+  for (let r=0; r<GRID.rows; r++) lawnMowers.push({row:r, x:GRID.left-35, active:true, moving:false});
+  cards = PLANT_ORDER.map((type,i)=>({type,...PLANT_DEFS[type], cooldown:0, index:i}));
+}
+
+function startNextWave() {
+  if (wave >= totalWaves) return;
+  waveSpawnList = [];
+  let data = WAVE_DATA[wave];
+  for (let g of data) for (let i = 0; i < g.n; i++) waveSpawnList.push(g.t);
+  // Shuffle so types are mixed up
+  for (let i = waveSpawnList.length - 1; i > 0; i--) {
+    let j = randInt(0, i);
+    [waveSpawnList[i], waveSpawnList[j]] = [waveSpawnList[j], waveSpawnList[i]];
+  }
+  waveSpawnIndex = 0;
+  // First zombie spawns after a short initial delay
+  nextSpawnTimer = 120;
+  waveActive = true;
+  wave++;
+  updateHUD();
+}
+
+function spawnZombie(type) {
+  let d = ZOMBIE_DEFS[type];
+  zombies.push({type, row:randInt(0,GRID.rows-1), x:W+rand(10,80), hp:d.hp, maxHp:d.hp, speed:d.speed, eating:false, animT:rand(0,100), slowTimer:0, buttered:false, butterTimer:0});
+}
+
+function findTargetRow(plantRow) {
+  let best = null;
+  for (let z of zombies) if (z.row===plantRow && z.x>GRID.left && (!best || z.x<best.x)) best=z;
+  return best;
+}
+
+function spawnSkySun() {
+  let x=rand(GRID.left+40, GRID.left+GRID.cols*GRID.w-40), ty=rand(GRID.top+40, GRID.top+GRID.rows*GRID.h-20);
+  suns.push({x, y:-20, tx:x, ty, val:25, timer:0, falling:true, collecting:false});
+}
+function spawnPlantSun(px,py) {
+  suns.push({x:px, y:py-10, tx:px+rand(-30,30), ty:py+rand(20,50), val:25, timer:0, falling:true, collecting:false});
+}
+function collectSun(s) { s.collecting=true; s.tx=70; s.ty=30; }
+
+function update() {
+  if (state !== 'playing') return;
+  frameCount++;
+  if (frameCount % 540 === 0) spawnSkySun();
+
+  // One-at-a-time wave spawning
+  if (waveActive && waveSpawnIndex < waveSpawnList.length) {
+    nextSpawnTimer--;
+    if (nextSpawnTimer <= 0) {
+      spawnZombie(waveSpawnList[waveSpawnIndex]);
+      waveSpawnIndex++;
+      if (waveSpawnIndex < waveSpawnList.length) {
+        // Set timer for next zombie: 5-9 seconds apart
+        nextSpawnTimer = randInt(300, 540);
+      } else {
+        // Last zombie spawned, wave will end when all are dead
+        waveActive = false;
+      }
+    }
+  }
+
+  // Between waves
+  if (!waveActive && waveSpawnIndex >= waveSpawnList.length && wave < totalWaves) {
+    nextWaveDelay--;
+    if (nextWaveDelay <= 0) { startNextWave(); nextWaveDelay = 1500; }
+  }
+
+  if (wave>=totalWaves && !waveActive && waveSpawnIndex>=waveSpawnList.length && zombies.length===0 && bullets.length===0) {
+    state='won'; showOverlay('VICTORY','The roof is secure!','You survived all 5 waves of rooftop zombies.'); return;
+  }
+
+  for (let p of plants) {
+    p.animT += 0.05; p.timer++;
+    if (p.type==='sunflower' && p.timer>=1440) { p.timer=0; let pos=gridPos(p.row,p.col); spawnPlantSun(pos.x,pos.y); }
+
+    if ((p.type==='catapult'||p.type==='wintermelon') && p.timer>=90) {
+      let target = findTargetRow(p.row);
+      if (target) {
+        p.timer=0; p.firing=14;
+        let pos=gridPos(p.row,p.col);
+        let isIce=p.type==='wintermelon';
+        bullets.push({sx:pos.x+18, sy:pos.y-28, tx:target.x, ty:GRID.top+p.row*GRID.h+GRID.h/2+8,
+          x:pos.x+18, y:pos.y-28, row:p.row, progress:0, speed:0.028,
+          dmg:isIce?80:40, type:isIce?'melon':'cabbage',
+          splashRadius:isIce?55:0, slowDuration:isIce?300:0, landed:false, targetX:target.x});
+      }
+    }
+
+    if (p.type==='kernel' && p.timer>=110) {
+      let target = findTargetRow(p.row);
+      if (target) {
+        p.timer=0; p.firing=14;
+        let pos=gridPos(p.row,p.col);
+        let isButter = Math.random()<0.3;
+        bullets.push({sx:pos.x+18, sy:pos.y-28, tx:target.x, ty:GRID.top+p.row*GRID.h+GRID.h/2+8,
+          x:pos.x+18, y:pos.y-28, row:p.row, progress:0, speed:0.025,
+          dmg:isButter?20:30, type:isButter?'butter':'corn',
+          splashRadius:0, slowDuration:0, landed:false, targetX:target.x, butter:isButter});
+      }
+    }
+    if (p.firing>0) p.firing--;
+  }
+
+  plants = plants.filter(p => {
+    if (p.hp<=0) { let pos=gridPos(p.row,p.col); spawnParticles(pos.x,pos.y,'#8b5e3c',10,[2,5],[1,3]); return false; }
+    return true;
+  });
+
+  for (let b of bullets) {
+    if (!b.landed) {
+      b.progress += b.speed;
+      if (b.progress>=1) {
+        b.progress=1; b.landed=true; b.x=b.tx; b.y=b.ty;
+        let sc = b.type==='melon'?'#80cbc4':b.type==='butter'?'#ffd54f':b.type==='corn'?'#ffb74d':'#8bc34a';
+        spawnSplash(b.x, b.y, sc);
+        for (let z of zombies) {
+          if (z.row===b.row && Math.abs(z.x-b.targetX)<25) {
+            z.hp-=b.dmg;
+            if (b.slowDuration>0) z.slowTimer=Math.max(z.slowTimer,b.slowDuration);
+            if (b.butter) { z.buttered=true; z.butterTimer=300; }
+            break;
+          }
+        }
+        if (b.splashRadius>0) {
+          for (let z of zombies) {
+            if (z.row===b.row && Math.abs(z.x-b.targetX)<b.splashRadius && Math.abs(z.x-b.targetX)>=25) {
+              z.hp-=b.dmg*0.5; z.slowTimer=Math.max(z.slowTimer,b.slowDuration);
+            }
+          }
+        }
+      } else {
+        b.x=lerp(b.sx,b.tx,b.progress);
+        b.y=lerp(b.sy,b.ty,b.progress)-(Math.abs(b.sy-b.ty)+130)*4*b.progress*(1-b.progress);
+      }
+    }
+  }
+  bullets = bullets.filter(b=>!b.landed);
+
+  for (let z of zombies) {
+    z.animT+=0.06;
+    if (z.slowTimer>0) z.slowTimer--;
+    if (z.butterTimer>0) { z.butterTimer--; if (z.butterTimer<=0) z.buttered=false; }
+    let spd=z.speed;
+    if (z.buttered) spd=0; else if (z.slowTimer>0) spd*=0.45;
+    z.eating=false;
+    let gp=toGrid(z.x, GRID.top+z.row*GRID.h+GRID.h/2);
+    if (gp) { let pl=plantAt(gp.row,gp.col); if (pl) { z.eating=true; if (frameCount%30===0) pl.hp-=100; } }
+    if (!z.eating) z.x-=spd;
+    if (z.x<GRID.left-10) {
+      let m=lawnMowers.find(m=>m.row===z.row&&m.active&&!m.moving);
+      if (m) { m.moving=true; showToast('Lawnmower activated!'); }
+      else { state='lost'; showOverlay('THE ZOMBIES ATE YOUR BRAINS','The roof has fallen...','Try more Wall-nuts and catapults.'); return; }
+    }
+  }
+
+  for (let m of lawnMowers) {
+    if (m.moving) { m.x+=6; for (let z of zombies) if (z.row===m.row&&Math.abs(z.x-m.x)<30) { z.hp=0; spawnParticles(z.x,GRID.top+z.row*GRID.h+GRID.h/2,'#888',10,[2,5],[1,4]); } }
+  }
+  lawnMowers = lawnMowers.filter(m=>!m.moving||m.x<W+50);
+
+  zombies = zombies.filter(z => { if (z.hp<=0) { spawnParticles(z.x,GRID.top+z.row*GRID.h+GRID.h/2,'#7a6a5a',12,[2,6],[1,4]); return false; } return true; });
+
+  for (let s of suns) {
+    if (s.collecting) { s.x=lerp(s.x,s.tx,0.12); s.y=lerp(s.y,s.ty,0.12); if (dist(s.x,s.y,s.tx,s.ty)<10) s.timer=9999; }
+    else if (s.falling) { s.y+=0.6; if (s.y>=s.ty) { s.y=s.ty; s.falling=false; } }
+    else s.timer++;
+  }
+  suns = suns.filter(s => { if (s.collecting&&s.timer>=9999) { sun+=s.val; updateHUD(); return false; } return s.timer<600; });
+
+  for (let p of particles) { p.x+=p.vx; p.y+=p.vy; p.vy+=0.08; p.life--; }
+  particles = particles.filter(p=>p.life>0);
+  for (let s of splashes) s.life--;
+  splashes = splashes.filter(s=>s.life>0);
+  for (let c of cards) if (c.cooldown>0) c.cooldown--;
+}
+
+function drawBackground() {
+  let grad = ctx.createLinearGradient(0,0,0,H);
+  grad.addColorStop(0,'#0b0e1a'); grad.addColorStop(0.15,'#151a30');
+  grad.addColorStop(0.3,'#1a1832'); grad.addColorStop(1,'#0d0a08');
+  ctx.fillStyle=grad; ctx.fillRect(0,0,W,H);
+
+  ctx.fillStyle='rgba(255,255,220,0.6)';
+  for (let i=0;i<40;i++) {
+    let sx=(i*137.5+50)%W, sy=(i*73.7+10)%(GRID.top-20), ss=0.5+(i%3)*0.5;
+    ctx.globalAlpha=(0.5+0.5*Math.sin(frameCount*0.02+i))*0.7;
+    ctx.beginPath(); ctx.arc(sx,sy,ss,0,Math.PI*2); ctx.fill();
+  }
+  ctx.globalAlpha=1;
+
+  ctx.fillStyle='#ffe8b0'; ctx.shadowColor='#ffe8b0'; ctx.shadowBlur=40;
+  ctx.beginPath(); ctx.arc(W-100,45,28,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#0b0e1a'; ctx.beginPath(); ctx.arc(W-88,38,24,0,Math.PI*2); ctx.fill();
+  ctx.shadowBlur=0;
+
+  let rT=GRID.top-5, rB=GRID.top+GRID.rows*GRID.h+10;
+  let rG=ctx.createLinearGradient(0,rT,0,rB);
+  rG.addColorStop(0,'#6b3a1f'); rG.addColorStop(0.3,'#7a4225');
+  rG.addColorStop(0.7,'#6d3820'); rG.addColorStop(1,'#5a2e18');
+  ctx.fillStyle=rG; ctx.fillRect(0,rT,W,rB-rT);
+
+  ctx.strokeStyle='rgba(0,0,0,0.12)'; ctx.lineWidth=1;
+  for (let r=0;r<=GRID.rows;r++) { let y=GRID.top+r*GRID.h; ctx.beginPath(); ctx.moveTo(GRID.left-30,y); ctx.lineTo(GRID.left+GRID.cols*GRID.w+15,y); ctx.stroke(); }
+  for (let c=0;c<=GRID.cols;c++) { let x=GRID.left+c*GRID.w; ctx.beginPath(); ctx.moveTo(x,rT); ctx.lineTo(x,rB); ctx.stroke(); }
+
+  ctx.globalAlpha=0.035;
+  for (let i=0;i<200;i++) { ctx.fillStyle=i%2?'#fff':'#000'; ctx.fillRect(GRID.left+(i*47.3)%(GRID.cols*GRID.w),GRID.top+(i*31.7)%(GRID.rows*GRID.h),rand(2,6),rand(2,6)); }
+  ctx.globalAlpha=1;
+
+  ctx.fillStyle='#4a2512'; ctx.fillRect(0,rB,W,8);
+  ctx.fillStyle='#3a1c0d'; ctx.fillRect(0,rB+8,W,4);
+
+  let wG=ctx.createLinearGradient(0,0,GRID.left-30,0);
+  wG.addColorStop(0,'#1a120e'); wG.addColorStop(1,'#2a1a12');
+  ctx.fillStyle=wG; ctx.fillRect(0,rT,GRID.left-30,rB-rT+12);
+
+  let rr=ctx.createLinearGradient(GRID.left+GRID.cols*GRID.w+15,0,W,0);
+  rr.addColorStop(0,'#6b3a1f'); rr.addColorStop(1,'#1a120e');
+  ctx.fillStyle=rr; ctx.fillRect(GRID.left+GRID.cols*GRID.w+15,rT,W-GRID.left-GRID.cols*GRID.w-15,rB-rT+12);
+
+  ctx.fillStyle='#5a2e18'; ctx.fillRect(W-160,0,40,rT+5);
+  ctx.fillStyle='#4a2512'; ctx.fillRect(W-165,0,50,12);
+  ctx.globalAlpha=0.08;
+  for (let i=0;i<5;i++) {
+    let sy=rT-20-i*18-Math.sin(frameCount*0.01+i)*8, sx=W-140+Math.sin(frameCount*0.015+i*2)*12;
+    ctx.fillStyle='#aaa'; ctx.beginPath(); ctx.arc(sx,sy,8+i*3,0,Math.PI*2); ctx.fill();
+  }
+  ctx.globalAlpha=1;
+}
+
+function drawPot(cx,cy,hl) {
+  let tw=34,bw=24,h=32,rim=6;
+  ctx.fillStyle='rgba(0,0,0,0.25)';
+  ctx.beginPath(); ctx.ellipse(cx+2,cy+h/2+3,bw/2+4,6,0,0,Math.PI*2); ctx.fill();
+  let pG=ctx.createLinearGradient(cx-tw/2,0,cx+tw/2,0);
+  pG.addColorStop(0,'#8b5e3c'); pG.addColorStop(0.3,'#c4844a');
+  pG.addColorStop(0.6,'#d49660'); pG.addColorStop(1,'#8b5e3c');
+  ctx.fillStyle=pG;
+  ctx.beginPath(); ctx.moveTo(cx-tw/2,cy-h/2+rim); ctx.lineTo(cx-bw/2,cy+h/2);
+  ctx.lineTo(cx+bw/2,cy+h/2); ctx.lineTo(cx+tw/2,cy-h/2+rim); ctx.closePath(); ctx.fill();
+  let rG=ctx.createLinearGradient(cx-tw/2-2,0,cx+tw/2+2,0);
+  rG.addColorStop(0,'#9a6a42'); rG.addColorStop(0.35,'#d4a070');
+  rG.addColorStop(0.65,'#dbb080'); rG.addColorStop(1,'#9a6a42');
+  ctx.fillStyle=rG;
+  ctx.beginPath(); ctx.moveTo(cx-tw/2-2,cy-h/2); ctx.lineTo(cx+tw/2+2,cy-h/2);
+  ctx.lineTo(cx+tw/2,cy-h/2+rim); ctx.lineTo(cx-tw/2,cy-h/2+rim); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle='rgba(255,220,180,0.3)'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(cx-tw/2,cy-h/2+1); ctx.lineTo(cx+tw/2,cy-h/2+1); ctx.stroke();
+  ctx.fillStyle='#3e2723'; ctx.beginPath(); ctx.ellipse(cx,cy-h/2+rim+2,tw/2-3,5,0,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#4e342e'; ctx.beginPath(); ctx.ellipse(cx,cy-h/2+rim+1,tw/2-4,3,0,0,Math.PI*2); ctx.fill();
+  if (hl) { ctx.strokeStyle='rgba(255,255,100,0.7)'; ctx.lineWidth=2; ctx.beginPath(); ctx.ellipse(cx,cy+2,tw/2+3,h/2+5,0,0,Math.PI*2); ctx.stroke(); }
+}
+
+function drawLeaf(x, y, len, width, angle, color, darkColor) {
+  ctx.save(); ctx.translate(x, y); ctx.rotate(angle);
+  let lG = ctx.createLinearGradient(0,-width/2,0,width/2);
+  lG.addColorStop(0, darkColor || '#2e7d32');
+  lG.addColorStop(0.4, color);
+  lG.addColorStop(1, darkColor || '#1b5e20');
+  ctx.fillStyle = lG;
+  ctx.beginPath(); ctx.moveTo(0, 0);
+  ctx.quadraticCurveTo(len*0.4, -width/2, len, 0);
+  ctx.quadraticCurveTo(len*0.4, width/2, 0, 0);
+  ctx.fill();
+  ctx.strokeStyle = darkColor || '#1b5e20'; ctx.lineWidth = 0.8; ctx.globalAlpha = 0.5;
+  ctx.beginPath(); ctx.moveTo(2, 0); ctx.lineTo(len-3, 0); ctx.stroke();
+  ctx.globalAlpha = 1; ctx.restore();
+}
+
+function drawPlantFace(x, y, size, eyeColor) {
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.ellipse(x-size*0.3, y-size*0.15, size*0.22, size*0.28, 0, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(x+size*0.3, y-size*0.15, size*0.22, size*0.28, 0, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = eyeColor || '#111';
+  ctx.beginPath(); ctx.arc(x-size*0.25, y-size*0.1, size*0.1, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x+size*0.35, y-size*0.1, size*0.1, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.arc(x-size*0.28, y-size*0.16, size*0.04, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x+size*0.32, y-size*0.16, size*0.04, 0, Math.PI*2); ctx.fill();
+  ctx.strokeStyle = eyeColor || '#111'; ctx.lineWidth = 1.2;
+  ctx.beginPath(); ctx.arc(x+size*0.05, y+size*0.1, size*0.15, 0.15, Math.PI-0.15); ctx.stroke();
+}
+
+function drawCabbageCatapult(x, y, t) {
+  let fireAnim = 0;
+  for (let p of plants) { let pos=gridPos(p.row,p.col); if(pos.x===x&&pos.y===y&&p.firing>0) { fireAnim=p.firing; break; } }
+
+  ctx.fillStyle = '#2e7d32';
+  ctx.beginPath();
+  ctx.moveTo(x-5, y+16); ctx.lineTo(x+5, y+16);
+  ctx.quadraticCurveTo(x+4, y, x+3, y-8);
+  ctx.quadraticCurveTo(x, y-10, x-3, y-8);
+  ctx.quadraticCurveTo(x-4, y, x-5, y+16);
+  ctx.fill();
+  ctx.fillStyle = 'rgba(129,199,132,0.3)'; ctx.fillRect(x-1, y+14, 3, 4);
+
+  drawLeaf(x, y+8, 22, 10, -0.9, '#43a047', '#2e7d32');
+  drawLeaf(x, y+8, 24, 10, -0.5, '#4caf50', '#2e7d32');
+  drawLeaf(x, y+10, 20, 9, 0.4, '#43a047', '#2e7d32');
+  drawLeaf(x, y+10, 22, 9, 0.8, '#4caf50', '#2e7d32');
+
+  ctx.strokeStyle = '#66bb6a'; ctx.lineWidth = 1.2;
+  ctx.beginPath(); ctx.moveTo(x-10, y+6); ctx.quadraticCurveTo(x-18, y-2, x-14, y-8); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x+10, y+8); ctx.quadraticCurveTo(x+18, y+2, x+15, y-4); ctx.stroke();
+
+  let armAngle = fireAnim > 0 ? lerp(0.15, -1.1, fireAnim/14) : 0.15;
+  let pivotX = x, pivotY = y - 10;
+
+  ctx.save(); ctx.translate(pivotX, pivotY); ctx.rotate(armAngle);
+  ctx.strokeStyle = '#2e7d32'; ctx.lineWidth = 7; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(0, 0); ctx.quadraticCurveTo(16, -6, 28, -4); ctx.stroke();
+  ctx.strokeStyle = '#43a047'; ctx.lineWidth = 4;
+  ctx.beginPath(); ctx.moveTo(1, -1); ctx.quadraticCurveTo(15, -5, 26, -3); ctx.stroke();
+  drawLeaf(14, -6, 8, 5, -0.8, '#66bb6a', '#43a047');
+  ctx.fillStyle = '#388e3c';
+  ctx.beginPath(); ctx.moveTo(24, -8); ctx.quadraticCurveTo(34, -12, 36, -4); ctx.quadraticCurveTo(34, 4, 24, 0); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#2e7d32';
+  ctx.beginPath(); ctx.moveTo(25, -6); ctx.quadraticCurveTo(32, -9, 33, -4); ctx.quadraticCurveTo(31, 1, 25, -1); ctx.closePath(); ctx.fill();
+  if (fireAnim <= 0 || fireAnim > 10) {
+    ctx.fillStyle = '#8bc34a'; ctx.beginPath(); ctx.arc(30, -4, 5, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#aed581'; ctx.globalAlpha=0.5; ctx.beginPath(); ctx.arc(29, -5, 2.5, 0, Math.PI*2); ctx.fill(); ctx.globalAlpha=1;
+  }
+  ctx.lineCap='butt'; ctx.restore();
+
+  let cwX = pivotX - Math.sin(armAngle) * 12, cwY = pivotY + Math.cos(armAngle) * 12;
+  ctx.strokeStyle = '#2e7d32'; ctx.lineWidth = 4; ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(pivotX, pivotY); ctx.lineTo(cwX, cwY+2); ctx.stroke(); ctx.lineCap='butt';
+  let bulbG = ctx.createRadialGradient(cwX-1, cwY, 1, cwX, cwY+2, 7);
+  bulbG.addColorStop(0, '#8d6e63'); bulbG.addColorStop(0.6, '#6d4c41'); bulbG.addColorStop(1, '#4e342e');
+  ctx.fillStyle = bulbG; ctx.beginPath(); ctx.ellipse(cwX, cwY+2, 6, 7, 0, 0, Math.PI*2); ctx.fill();
+  ctx.strokeStyle = '#5d4037'; ctx.lineWidth = 0.8;
+  for (let i=0;i<3;i++) { let a = 0.5 + i*0.6; ctx.beginPath(); ctx.moveTo(cwX+Math.cos(a)*5, cwY+8); ctx.lineTo(cwX+Math.cos(a)*8, cwY+12); ctx.stroke(); }
+
+  drawPlantFace(x+1, y-4, 18, '#1b5e20');
+}
+
+function drawWinterMelon(x, y, t) {
+  let fireAnim = 0;
+  for (let p of plants) { let pos=gridPos(p.row,p.col); if(pos.x===x&&pos.y===y&&p.firing>0) { fireAnim=p.firing; break; } }
+
+  ctx.globalAlpha = 0.06 + 0.03 * Math.sin(t * 0.8);
+  ctx.fillStyle = '#80deea'; ctx.beginPath(); ctx.arc(x, y, 32, 0, Math.PI*2); ctx.fill();
+  ctx.globalAlpha = 1;
+
+  ctx.fillStyle = '#00695c';
+  ctx.beginPath();
+  ctx.moveTo(x-6, y+16); ctx.lineTo(x+6, y+16);
+  ctx.quadraticCurveTo(x+5, y, x+4, y-8);
+  ctx.quadraticCurveTo(x, y-10, x-4, y-8);
+  ctx.quadraticCurveTo(x-5, y, x-6, y+16);
+  ctx.fill();
+
+  drawLeaf(x, y+8, 25, 12, -1.0, '#26a69a', '#00695c');
+  drawLeaf(x, y+8, 28, 12, -0.5, '#2bbbad', '#00796b');
+  drawLeaf(x, y+10, 24, 11, 0.3, '#26a69a', '#00695c');
+  drawLeaf(x, y+10, 26, 11, 0.8, '#2bbbad', '#00796b');
+
+  ctx.strokeStyle = '#4db6ac'; ctx.lineWidth = 1.2;
+  ctx.beginPath(); ctx.moveTo(x-12, y+4); ctx.quadraticCurveTo(x-20, y-4, x-16, y-10); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x+12, y+6); ctx.quadraticCurveTo(x+20, y, x+17, y-6); ctx.stroke();
+  ctx.fillStyle = 'rgba(178,235,242,0.6)';
+  ctx.beginPath(); ctx.arc(x-16, y-10, 2, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x+17, y-6, 2, 0, Math.PI*2); ctx.fill();
+
+  let armAngle = fireAnim > 0 ? lerp(0.15, -1.1, fireAnim/14) : 0.15;
+  let pivotX = x, pivotY = y - 10;
+  ctx.save(); ctx.translate(pivotX, pivotY); ctx.rotate(armAngle);
+  ctx.strokeStyle = '#00695c'; ctx.lineWidth = 8; ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(0,0); ctx.quadraticCurveTo(16,-6,30,-4); ctx.stroke();
+  ctx.strokeStyle = '#00897b'; ctx.lineWidth = 5;
+  ctx.beginPath(); ctx.moveTo(1,-1); ctx.quadraticCurveTo(15,-5,28,-3); ctx.stroke();
+  drawLeaf(15, -7, 9, 6, -0.8, '#4db6ac', '#00897b');
+  ctx.fillStyle = '#00796b';
+  ctx.beginPath(); ctx.moveTo(26,-10); ctx.quadraticCurveTo(40,-14,42,-4); ctx.quadraticCurveTo(40,6,26,0); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#00695c';
+  ctx.beginPath(); ctx.moveTo(27,-8); ctx.quadraticCurveTo(37,-11,38,-4); ctx.quadraticCurveTo(36,3,27,-1); ctx.closePath(); ctx.fill();
+  if (fireAnim<=0||fireAnim>10) {
+    ctx.fillStyle='#4db6ac'; ctx.beginPath(); ctx.ellipse(35,-4,7,6,0.2,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='#00897b'; ctx.beginPath(); ctx.ellipse(35,-4,5,4,0.2,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle='#00695c'; ctx.lineWidth=0.8;
+    for(let i=-1;i<=1;i++){ctx.beginPath();ctx.ellipse(35+i*3,-4,0.8,4,0.1,0,Math.PI*2);ctx.stroke();}
+  }
+  ctx.lineCap='butt'; ctx.restore();
+
+  let cwX=pivotX-Math.sin(armAngle)*13, cwY=pivotY+Math.cos(armAngle)*13;
+  ctx.strokeStyle='#00695c'; ctx.lineWidth=4; ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(pivotX,pivotY); ctx.lineTo(cwX,cwY+2); ctx.stroke(); ctx.lineCap='butt';
+  let bG=ctx.createRadialGradient(cwX-1,cwY,1,cwX,cwY+2,8);
+  bG.addColorStop(0,'#80cbc4'); bG.addColorStop(0.6,'#4db6ac'); bG.addColorStop(1,'#00897b');
+  ctx.fillStyle=bG; ctx.beginPath(); ctx.ellipse(cwX,cwY+2,7,8,0,0,Math.PI*2); ctx.fill();
+
+  drawPlantFace(x+1, y-4, 20, '#004d40');
+}
+
+function drawKernelPult(x, y, t) {
+  let fireAnim = 0;
+  for (let p of plants) { let pos=gridPos(p.row,p.col); if(pos.x===x&&pos.y===y&&p.firing>0) { fireAnim=p.firing; break; } }
+
+  ctx.fillStyle = '#558b2f';
+  ctx.beginPath();
+  ctx.moveTo(x-4, y+16); ctx.lineTo(x+4, y+16);
+  ctx.quadraticCurveTo(x+3, y, x+2, y-8);
+  ctx.quadraticCurveTo(x, y-10, x-2, y-8);
+  ctx.quadraticCurveTo(x-3, y, x-4, y+16);
+  ctx.fill();
+  ctx.strokeStyle = '#689f38'; ctx.lineWidth = 1;
+  for (let i=0;i<3;i++) { let sy = y+12-i*6; ctx.beginPath(); ctx.moveTo(x-4,sy); ctx.lineTo(x+4,sy); ctx.stroke(); }
+
+  drawLeaf(x, y+6, 28, 8, -1.2, '#7cb342', '#558b2f');
+  drawLeaf(x, y+8, 30, 9, -0.6, '#8bc34a', '#689f38');
+  drawLeaf(x, y+10, 26, 8, 0.5, '#7cb342', '#558b2f');
+  drawLeaf(x, y+10, 28, 8, 1.0, '#8bc34a', '#689f38');
+
+  ctx.strokeStyle = '#9e9d24'; ctx.lineWidth = 1;
+  for (let i=0;i<4;i++) { let a = -1.5 + i*0.7 + Math.sin(t+i)*0.1; ctx.beginPath(); ctx.moveTo(x, y-10); ctx.lineTo(x+Math.cos(a)*8, y-18+Math.sin(t*0.5+i)*2); ctx.stroke(); }
+
+  let armAngle = fireAnim > 0 ? lerp(0.15, -1.1, fireAnim/14) : 0.15;
+  let pivotX = x, pivotY = y - 10;
+  ctx.save(); ctx.translate(pivotX, pivotY); ctx.rotate(armAngle);
+  ctx.strokeStyle = '#558b2f'; ctx.lineWidth = 6; ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(0,0); ctx.quadraticCurveTo(14,-5,26,-3); ctx.stroke();
+  ctx.strokeStyle = '#7cb342'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(1,-1); ctx.quadraticCurveTo(13,-4,24,-2); ctx.stroke();
+  drawLeaf(12, -5, 7, 4, -0.9, '#8bc34a', '#689f38');
+  ctx.fillStyle = '#9e9d24';
+  ctx.beginPath(); ctx.moveTo(22,-7); ctx.quadraticCurveTo(32,-10,34,-3); ctx.quadraticCurveTo(32,3,22,0); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#827717';
+  ctx.beginPath(); ctx.moveTo(23,-5); ctx.quadraticCurveTo(30,-8,31,-3); ctx.quadraticCurveTo(30,1,23,-1); ctx.closePath(); ctx.fill();
+  if (fireAnim<=0||fireAnim>10) {
+    ctx.fillStyle='#fff3e0'; ctx.beginPath(); ctx.arc(29,-3,3.5,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='#ffe0b2'; ctx.globalAlpha=0.5; ctx.beginPath(); ctx.arc(28.5,-3.5,1.8,0,Math.PI*2); ctx.fill(); ctx.globalAlpha=1;
+  }
+  ctx.lineCap='butt'; ctx.restore();
+
+  let cwX=pivotX-Math.sin(armAngle)*11, cwY=pivotY+Math.cos(armAngle)*11;
+  ctx.strokeStyle='#558b2f'; ctx.lineWidth=3; ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(pivotX,pivotY); ctx.lineTo(cwX,cwY+2); ctx.stroke(); ctx.lineCap='butt';
+  ctx.fillStyle='#f9a825'; ctx.beginPath(); ctx.ellipse(cwX,cwY+2,4,6,0.2,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#f57f17'; ctx.beginPath(); ctx.ellipse(cwX,cwY+2,3,4.5,0.2,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#fff8e1';
+  for(let i=0;i<3;i++){ctx.beginPath();ctx.arc(cwX-1+i*1.5,cwY-1+i*3,1,0,Math.PI*2);ctx.fill();}
+
+  let headY = y - 5;
+  ctx.fillStyle = '#ffb74d'; ctx.beginPath(); ctx.ellipse(x+1, headY, 8, 11, 0.1, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#ffa726'; ctx.beginPath(); ctx.ellipse(x+1, headY, 6, 9, 0.1, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#fff3e0';
+  for (let i=0;i<5;i++) {
+    ctx.beginPath(); ctx.arc(x-2+(i%2)*3, headY-5+i*2.5, 1.2, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x+1+(i%2)*2, headY-5+i*2.5, 1.2, 0, Math.PI*2); ctx.fill();
+  }
+  ctx.strokeStyle = '#689f38'; ctx.lineWidth = 0.8;
+  for (let i=0;i<3;i++) { let a = -0.8+i*0.5; ctx.beginPath(); ctx.moveTo(x-4, headY-9); ctx.quadraticCurveTo(x-10+i*3, headY-16, x-8+i*4, headY-18); ctx.stroke(); }
+  ctx.fillStyle = '#4e342e';
+  ctx.beginPath(); ctx.arc(x-2, headY-1, 1.5, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x+4, headY-1, 1.5, 0, Math.PI*2); ctx.fill();
+  ctx.strokeStyle = '#4e342e'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.arc(x+1, headY+3, 2.5, 0.2, Math.PI-0.2); ctx.stroke();
+}
+
+function drawSunflower(x, y, t) {
+  let bob = Math.sin(t) * 2;
+  ctx.fillStyle = '#33691e'; ctx.fillRect(x-3, y-2+bob, 6, 20);
+  ctx.fillStyle = '#558b2f';
+  ctx.beginPath(); ctx.ellipse(x-10, y+10, 9, 4, -0.5, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(x+10, y+12, 9, 4, 0.5, 0, Math.PI*2); ctx.fill();
+  for (let i=0;i<10;i++) {
+    let a=(i/10)*Math.PI*2+Math.sin(t*0.5)*0.1;
+    ctx.fillStyle=i%2===0?'#ffd600':'#ffab00';
+    ctx.beginPath(); ctx.ellipse(x+Math.cos(a)*14, y-14+bob+Math.sin(a)*14, 7, 4, a, 0, Math.PI*2); ctx.fill();
+  }
+  ctx.fillStyle='#5d4037'; ctx.beginPath(); ctx.arc(x, y-14+bob, 9, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle='#6d4c41'; ctx.beginPath(); ctx.arc(x-1, y-15+bob, 7, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle='#111';
+  ctx.beginPath(); ctx.arc(x-3, y-16+bob, 1.5, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x+3, y-16+bob, 1.5, 0, Math.PI*2); ctx.fill();
+  ctx.strokeStyle='#111'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.arc(x, y-12+bob, 3, 0.1, Math.PI-0.1); ctx.stroke();
+}
+
+function drawWallnut(x, y, t, hpR) {
+  let sq = 1+(1-hpR)*0.15;
+  ctx.fillStyle='rgba(0,0,0,0.2)'; ctx.beginPath(); ctx.ellipse(x+2,y+14,18,5,0,0,Math.PI*2); ctx.fill();
+  let nG=ctx.createRadialGradient(x-5,y-10,2,x,y,20);
+  nG.addColorStop(0,'#d4a060'); nG.addColorStop(0.6,'#a0724a'); nG.addColorStop(1,'#6d4c30');
+  ctx.fillStyle=nG; ctx.beginPath(); ctx.ellipse(x,y-4,18*sq,22/sq,0,0,Math.PI*2); ctx.fill();
+  if (hpR<0.66) { ctx.strokeStyle='#3e2723'; ctx.lineWidth=1.5; ctx.beginPath(); ctx.moveTo(x-5,y-18); ctx.lineTo(x-2,y-8); ctx.lineTo(x-8,y+2); ctx.stroke(); }
+  if (hpR<0.33) { ctx.beginPath(); ctx.moveTo(x+6,y-15); ctx.lineTo(x+3,y-4); ctx.lineTo(x+9,y+8); ctx.stroke(); ctx.beginPath(); ctx.moveTo(x-2,y+5); ctx.lineTo(x+4,y+14); ctx.stroke(); }
+  ctx.fillStyle='#3e2723';
+  ctx.beginPath(); ctx.arc(x-5,y-8,2.5,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x+5,y-8,2.5,0,Math.PI*2); ctx.fill();
+  ctx.strokeStyle='#3e2723'; ctx.lineWidth=1.5;
+  ctx.beginPath(); if(hpR>0.5)ctx.arc(x,y-2,4,0.2,Math.PI-0.2); else ctx.arc(x,y+4,4,Math.PI+0.3,-0.3); ctx.stroke();
+  ctx.fillStyle='rgba(255,220,180,0.15)'; ctx.beginPath(); ctx.ellipse(x-6,y-14,6,8,-0.3,0,Math.PI*2); ctx.fill();
+}
+
+function drawPlant(p) {
+  let pos = gridPos(p.row, p.col), x=pos.x, y=pos.y;
+  drawPot(x, y+20, false);
+  let hpR = p.hp / p.maxHp;
+  if (hpR<1) { ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(x-16,y-44,32,4); ctx.fillStyle=hpR>0.5?'#4caf50':hpR>0.25?'#ff9800':'#f44336'; ctx.fillRect(x-16,y-44,32*hpR,4); }
+  switch(p.type) {
+    case 'catapult': drawCabbageCatapult(x,y,p.animT); break;
+    case 'wintermelon': drawWinterMelon(x,y,p.animT); break;
+    case 'kernel': drawKernelPult(x,y,p.animT); break;
+    case 'sunflower': drawSunflower(x,y,p.animT); break;
+    case 'wallnut': drawWallnut(x,y,p.animT,hpR); break;
+  }
+}
+
+function drawZombie(z) {
+  let y=GRID.top+z.row*GRID.h+GRID.h/2+8, x=z.x, t=z.animT;
+  let walk=z.eating?0:Math.sin(t*3)*3, armS=z.eating?Math.sin(t*8)*15:Math.sin(t*3)*8;
+  let isSlow=z.slowTimer>0;
+  let skin=z.buttered?'#d4a040':(isSlow?'#6a8fa8':'#7a9a6a');
+  ctx.fillStyle='rgba(0,0,0,0.3)'; ctx.beginPath(); ctx.ellipse(x,y+28,14,5,0,0,Math.PI*2); ctx.fill();
+  ctx.strokeStyle='#444'; ctx.lineWidth=5;
+  ctx.beginPath(); ctx.moveTo(x-5,y+12); ctx.lineTo(x-7+walk*0.5,y+26); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x+5,y+12); ctx.lineTo(x+7-walk*0.5,y+26); ctx.stroke();
+  ctx.fillStyle='#5a4a3a'; ctx.beginPath(); ctx.moveTo(x-12,y-8); ctx.lineTo(x-14,y+14); ctx.lineTo(x+14,y+14); ctx.lineTo(x+12,y-8); ctx.closePath(); ctx.fill();
+  ctx.fillStyle='#8b0000'; ctx.fillRect(x-2,y-6,4,16);
+  ctx.strokeStyle=skin; ctx.lineWidth=5; ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(x-12,y-4); ctx.lineTo(x-20+armS*0.5,y+4+(z.eating?-5:0)); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x+12,y-4); ctx.lineTo(x+22+armS*0.5,y-2+(z.eating?-8:0)); ctx.stroke();
+  ctx.lineCap='butt';
+  ctx.fillStyle=skin; ctx.beginPath(); ctx.arc(x,y-18,12,0,Math.PI*2); ctx.fill();
+  if (z.buttered) {
+    ctx.fillStyle='rgba(255,213,79,0.7)'; ctx.beginPath(); ctx.ellipse(x+2,y-20,10,8,0.2,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='rgba(255,235,130,0.5)'; ctx.beginPath(); ctx.ellipse(x,y-22,6,4,-0.1,0,Math.PI*2); ctx.fill();
+  }
+  ctx.fillStyle=z.buttered?'#a08000':'#cc0';
+  ctx.beginPath(); ctx.arc(x-4,y-20,3,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x+4,y-20,3,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#600';
+  ctx.beginPath(); ctx.arc(x-4,y-20,1.5,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x+4,y-20,1.5,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#3a2a1a'; ctx.beginPath(); ctx.arc(x,y-12,4,0,Math.PI); ctx.fill();
+  if (z.type==='cone') {
+    ctx.fillStyle=z.hp/z.maxHp>0.5?'#ff8f00':'#e65100';
+    ctx.beginPath(); ctx.moveTo(x,y-42); ctx.lineTo(x-10,y-16); ctx.lineTo(x+10,y-16); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle='#bf360c'; ctx.lineWidth=1; ctx.stroke();
+  } else if (z.type==='bucket') {
+    ctx.fillStyle=z.hp/z.maxHp>0.5?'#78909c':'#546e7a'; ctx.fillRect(x-11,y-32,22,18);
+    ctx.fillStyle=z.hp/z.maxHp>0.5?'#90a4ae':'#607d8b'; ctx.fillRect(x-12,y-32,24,4);
+    ctx.strokeStyle='#455a64'; ctx.lineWidth=2; ctx.beginPath(); ctx.arc(x,y-30,10,Math.PI+0.3,-0.3); ctx.stroke();
+  } else if (z.type==='flag') {
+    ctx.strokeStyle='#5d4037'; ctx.lineWidth=2; ctx.beginPath(); ctx.moveTo(x+8,y-18); ctx.lineTo(x+8,y-48); ctx.stroke();
+    ctx.fillStyle='#c62828'; ctx.beginPath(); ctx.moveTo(x+8,y-48); ctx.lineTo(x+28,y-42); ctx.lineTo(x+8,y-36); ctx.closePath(); ctx.fill();
+  }
+  let hpR=z.hp/z.maxHp;
+  if (hpR<1) { ctx.fillStyle='rgba(0,0,0,0.6)'; ctx.fillRect(x-16,y-44,32,3); ctx.fillStyle=hpR>0.5?'#4caf50':hpR>0.25?'#ff9800':'#f44336'; ctx.fillRect(x-16,y-44,32*hpR,3); }
+  if (isSlow&&!z.buttered) { ctx.fillStyle='rgba(100,200,255,0.2)'; ctx.beginPath(); ctx.arc(x,y,22,0,Math.PI*2); ctx.fill(); }
+}
+
+function drawBullet(b) {
+  let size,color,hl;
+  switch(b.type) {
+    case 'cabbage': size=8;color='#8bc34a';hl='#aed581'; break;
+    case 'melon': size=12;color='#4db6ac';hl='#80cbc4'; break;
+    case 'corn': size=5;color='#fff3e0';hl='#ffe0b2'; break;
+    case 'butter': size=8;color='#ffd54f';hl='#fff176'; break;
+    default: size=6;color='#8bc34a';hl='#aed581';
+  }
+  let shadowX=lerp(b.sx,b.tx,b.progress), shadowY=b.ty+5;
+  ctx.fillStyle='rgba(0,0,0,0.2)'; ctx.beginPath(); ctx.ellipse(shadowX,shadowY,size*0.7,3,0,0,Math.PI*2); ctx.fill();
+  if (b.type==='melon') { ctx.fillStyle='rgba(77,182,172,0.2)'; ctx.beginPath(); ctx.arc(b.x,b.y,size+6,0,Math.PI*2); ctx.fill(); }
+  if (b.type==='melon') {
+    ctx.fillStyle=color; ctx.beginPath(); ctx.ellipse(b.x,b.y,size,size*0.8,0.2,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='#00897b'; ctx.beginPath(); ctx.ellipse(b.x,b.y,size*0.85,size*0.65,0.2,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle='#00695c'; ctx.lineWidth=1;
+    for(let i=-1;i<=1;i++){ctx.beginPath();ctx.ellipse(b.x+i*4,b.y,1,size*0.6,0.1,0,Math.PI*2);ctx.stroke();}
+    ctx.fillStyle=hl; ctx.globalAlpha=0.3; ctx.beginPath(); ctx.arc(b.x-3,b.y-3,size*0.4,0,Math.PI*2); ctx.fill(); ctx.globalAlpha=1;
+  } else if (b.type==='butter') {
+    ctx.fillStyle=color; ctx.beginPath(); ctx.ellipse(b.x,b.y,size,size*0.6,Math.sin(b.progress*10)*0.3,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle=hl; ctx.globalAlpha=0.5; ctx.beginPath(); ctx.arc(b.x-2,b.y-1,size*0.4,0,Math.PI*2); ctx.fill(); ctx.globalAlpha=1;
+  } else {
+    ctx.fillStyle=color; ctx.beginPath(); ctx.arc(b.x,b.y,size,0,Math.PI*2); ctx.fill();
+    if (b.type==='cabbage') { ctx.fillStyle='#689f38'; ctx.globalAlpha=0.5; ctx.beginPath(); ctx.ellipse(b.x+2,b.y-3,4,2,0.5,0,Math.PI*2); ctx.fill(); ctx.globalAlpha=1; }
+    ctx.fillStyle=hl; ctx.globalAlpha=0.5; ctx.beginPath(); ctx.arc(b.x-1,b.y-1,size*0.4,0,Math.PI*2); ctx.fill(); ctx.globalAlpha=1;
+  }
+  if (b.progress<0.8) {
+    ctx.globalAlpha=0.15; ctx.fillStyle=color;
+    let pp=Math.max(0,b.progress-0.06);
+    let px=lerp(b.sx,b.tx,pp), py=lerp(b.sy,b.ty,pp)-(Math.abs(b.sy-b.ty)+130)*4*pp*(1-pp);
+    ctx.beginPath(); ctx.arc(px,py,size*0.7,0,Math.PI*2); ctx.fill(); ctx.globalAlpha=1;
+  }
+}
+
+function drawSplash(s) {
+  let p=1-s.life/s.maxLife, r=15+p*35;
+  ctx.globalAlpha=(1-p)*0.5; ctx.fillStyle=s.color; ctx.beginPath(); ctx.arc(s.x,s.y,r,0,Math.PI*2); ctx.fill();
+  ctx.strokeStyle=s.color; ctx.lineWidth=2; ctx.globalAlpha=(1-p)*0.8; ctx.beginPath(); ctx.arc(s.x,s.y,r,0,Math.PI*2); ctx.stroke();
+  ctx.globalAlpha=1;
+}
+
+function drawSun(s) {
+  let pulse=1+Math.sin(frameCount*0.08)*0.08, r=16*pulse;
+  ctx.fillStyle='rgba(255,235,59,0.15)'; ctx.beginPath(); ctx.arc(s.x,s.y,r+10,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#ffd600';
+  for(let i=0;i<8;i++){let a=(i/8)*Math.PI*2+frameCount*0.02;ctx.beginPath();ctx.ellipse(s.x+Math.cos(a)*r*0.7,s.y+Math.sin(a)*r*0.7,5,3,a,0,Math.PI*2);ctx.fill();}
+  let sG=ctx.createRadialGradient(s.x-3,s.y-3,1,s.x,s.y,r);
+  sG.addColorStop(0,'#fff9c4'); sG.addColorStop(0.5,'#ffd600'); sG.addColorStop(1,'#f9a825');
+  ctx.fillStyle=sG; ctx.beginPath(); ctx.arc(s.x,s.y,r,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#f57f17';
+  ctx.beginPath(); ctx.arc(s.x-4,s.y-2,2,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(s.x+4,s.y-2,2,0,Math.PI*2); ctx.fill();
+  ctx.strokeStyle='#f57f17'; ctx.lineWidth=1.5; ctx.beginPath(); ctx.arc(s.x,s.y+3,4,0.2,Math.PI-0.2); ctx.stroke();
+}
+
+function drawLawnmower(m) {
+  let y=GRID.top+m.row*GRID.h+GRID.h/2+20;
+  ctx.fillStyle='#d32f2f'; ctx.fillRect(m.x-12,y-8,24,16);
+  ctx.fillStyle='#b71c1c'; ctx.fillRect(m.x-10,y-6,20,12);
+  ctx.fillStyle='#222';
+  ctx.beginPath(); ctx.arc(m.x-10,y+8,4,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(m.x+10,y+8,4,0,Math.PI*2); ctx.fill();
+  if(m.moving){let a=frameCount*0.5;ctx.strokeStyle='#aaa';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(m.x+Math.cos(a)*8,y+Math.sin(a)*4);ctx.lineTo(m.x-Math.cos(a)*8,y-Math.sin(a)*4);ctx.stroke();}
+}
+
+function drawCardSlot() {
+  let pX=10,pY=10,pW=210,pH=74;
+  ctx.fillStyle='rgba(20,12,5,0.88)'; ctx.strokeStyle='#5a3a1a'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.roundRect(pX,pY,pW,pH,8); ctx.fill(); ctx.stroke();
+  for (let i=0;i<cards.length;i++) {
+    let c=cards[i], cx=pX+6+i*36, cy=pY+6, cw=34, ch=60;
+    let ok=sun>=c.cost&&c.cooldown<=0, sel=selectedCard===i;
+    ctx.fillStyle=sel?'#4a3520':(ok?'#3a2a18':'#1a1210');
+    ctx.strokeStyle=sel?'#ffa000':'#5a3a1a'; ctx.lineWidth=sel?2:1;
+    ctx.beginPath(); ctx.roundRect(cx,cy,cw,ch,4); ctx.fill(); ctx.stroke();
+    if(c.cooldown>0){ctx.fillStyle='rgba(0,0,0,0.6)';ctx.fillRect(cx+1,cy+1,cw-2,(ch-2)*(c.cooldown/c.cd));}
+    ctx.globalAlpha=ok?1:0.4;
+    let icx=cx+cw/2, icy=cy+24;
+    switch(c.type) {
+      case 'catapult':
+        ctx.fillStyle='#558b2f'; ctx.fillRect(icx-2,icy+4,4,10);
+        drawLeaf(icx,icy+6,10,5,-0.6,'#4caf50','#2e7d32');
+        drawLeaf(icx,icy+8,10,5,0.5,'#43a047','#2e7d32');
+        ctx.strokeStyle='#2e7d32'; ctx.lineWidth=2; ctx.lineCap='round';
+        ctx.beginPath(); ctx.moveTo(icx,icy); ctx.lineTo(icx+10,icy-8); ctx.stroke(); ctx.lineCap='butt';
+        ctx.fillStyle='#8bc34a'; ctx.beginPath(); ctx.arc(icx+10,icy-9,3.5,0,Math.PI*2); ctx.fill();
+        break;
+      case 'wintermelon':
+        ctx.fillStyle='#00695c'; ctx.fillRect(icx-2,icy+4,4,10);
+        drawLeaf(icx,icy+6,10,5,-0.6,'#26a69a','#00695c');
+        drawLeaf(icx,icy+8,10,5,0.5,'#2bbbad','#00695c');
+        ctx.strokeStyle='#00695c'; ctx.lineWidth=2; ctx.lineCap='round';
+        ctx.beginPath(); ctx.moveTo(icx,icy); ctx.lineTo(icx+10,icy-8); ctx.stroke(); ctx.lineCap='butt';
+        ctx.fillStyle='#4db6ac'; ctx.beginPath(); ctx.ellipse(icx+10,icy-9,4,3.5,0.2,0,Math.PI*2); ctx.fill();
+        break;
+      case 'kernel':
+        ctx.fillStyle='#558b2f'; ctx.fillRect(icx-2,icy+4,4,10);
+        drawLeaf(icx,icy+6,10,4,-0.7,'#7cb342','#558b2f');
+        drawLeaf(icx,icy+8,10,4,0.6,'#8bc34a','#689f38');
+        ctx.strokeStyle='#558b2f'; ctx.lineWidth=2; ctx.lineCap='round';
+        ctx.beginPath(); ctx.moveTo(icx,icy); ctx.lineTo(icx+10,icy-8); ctx.stroke(); ctx.lineCap='butt';
+        ctx.fillStyle='#fff3e0'; ctx.beginPath(); ctx.arc(icx+10,icy-9,3,0,Math.PI*2); ctx.fill();
+        break;
+      case 'sunflower':
+        ctx.fillStyle='#ffd600';
+        for(let j=0;j<6;j++){let a=(j/6)*Math.PI*2;ctx.beginPath();ctx.ellipse(icx+Math.cos(a)*6,icy+Math.sin(a)*6,4,2,a,0,Math.PI*2);ctx.fill();}
+        ctx.fillStyle='#5d4037'; ctx.beginPath(); ctx.arc(icx,icy,5,0,Math.PI*2); ctx.fill();
+        break;
+      case 'wallnut':
+        ctx.fillStyle='#a0724a'; ctx.beginPath(); ctx.ellipse(icx,icy,9,11,0,0,Math.PI*2); ctx.fill();
+        ctx.fillStyle='#3e2723';
+        ctx.beginPath(); ctx.arc(icx-3,icy-2,1.5,0,Math.PI*2); ctx.fill();
+        ctx.beginPath(); ctx.arc(icx+3,icy-2,1.5,0,Math.PI*2); ctx.fill();
+        break;
+    }
+    ctx.globalAlpha=1;
+    ctx.fillStyle=sun>=c.cost?'#ffd700':'#ff5252'; ctx.font='bold 10px Nunito'; ctx.textAlign='center';
+    ctx.fillText(c.cost,cx+cw/2,cy+ch-4);
+  }
+  let sx=pX+6+cards.length*36+2, sy=pY+15;
+  ctx.fillStyle=shovelMode?'#5a3020':'#2a1a10'; ctx.strokeStyle=shovelMode?'#ff6d00':'#5a3a1a'; ctx.lineWidth=shovelMode?2:1;
+  ctx.beginPath(); ctx.roundRect(sx,sy,28,40,4); ctx.fill(); ctx.stroke();
+  ctx.fillStyle='#8d6e63'; ctx.fillRect(sx+12,sy+6,4,22);
+  ctx.fillStyle='#78909c'; ctx.beginPath(); ctx.moveTo(sx+6,sy+6); ctx.lineTo(sx+22,sy+6); ctx.lineTo(sx+20,sy+14); ctx.lineTo(sx+8,sy+14); ctx.closePath(); ctx.fill();
+}
+
+function drawParticles() {
+  for (let p of particles) { ctx.globalAlpha=p.life/p.maxLife; ctx.fillStyle=p.color; ctx.beginPath(); ctx.arc(p.x,p.y,p.size,0,Math.PI*2); ctx.fill(); }
+  ctx.globalAlpha=1;
+}
+
+function drawHoverHighlight() {
+  if (selectedCard===null&&!shovelMode) return;
+  let g=hoverGrid; if(!g) return;
+  if (shovelMode) { ctx.strokeStyle='rgba(255,80,80,0.7)'; ctx.lineWidth=2; ctx.setLineDash([4,4]); ctx.strokeRect(GRID.left+g.col*GRID.w,GRID.top+g.row*GRID.h,GRID.w,GRID.h); ctx.setLineDash([]); }
+  else { ctx.fillStyle=plantAt(g.row,g.col)?'rgba(255,0,0,0.15)':'rgba(100,255,100,0.15)'; ctx.fillRect(GRID.left+g.col*GRID.w,GRID.top+g.row*GRID.h,GRID.w,GRID.h); }
+}
+
+function getRemainingInWave() {
+  if (!waveActive) return 0;
+  return waveSpawnList.length - waveSpawnIndex;
+}
+
+function drawCountdown() {
+  if (!waveActive && wave < totalWaves && nextWaveDelay > 300) {
+    let barW = 200, barH = 8;
+    let barX = W/2 - barW/2, barY = GRID.top - 16;
+    let progress = 1 - (nextWaveDelay - 300) / (1500 - 300);
+    ctx.fillStyle = 'rgba(0,0,0,0.4)';
+    ctx.beginPath(); ctx.roundRect(barX, barY, barW, barH, 4); ctx.fill();
+    let bG = ctx.createLinearGradient(barX, 0, barX + barW * progress, 0);
+    bG.addColorStop(0, '#e65100');
+    bG.addColorStop(1, '#ff9800');
+    ctx.fillStyle = bG;
+    ctx.beginPath(); ctx.roundRect(barX, barY, barW * progress, barH, 4); ctx.fill();
+    ctx.fillStyle = 'rgba(255,180,100,0.7)';
+    ctx.font = "14px 'Nunito', sans-serif";
+    ctx.textAlign = 'center';
+    let secs = Math.ceil((nextWaveDelay - 300) / 60);
+    ctx.fillText('Next wave in ' + secs + 's', W/2, barY - 4);
+  }
+
+  // During active wave: show remaining count and next spawn timer
+  if (waveActive && waveSpawnIndex < waveSpawnList.length) {
+    let remaining = getRemainingInWave();
+    let total = waveSpawnList.length;
+    ctx.fillStyle = 'rgba(255,150,50,0.9)';
+    ctx.font = "bold 18px 'Bangers', cursive";
+    ctx.textAlign = 'center';
+    ctx.fillText('Wave ' + wave + ' — ' + remaining + ' zombie' + (remaining !== 1 ? 's' : '') + ' remaining', W/2, GRID.top - 20);
+
+    // Small timer bar for next spawn
+    let barW = 120, barH = 5;
+    let barX = W/2 - barW/2, barY = GRID.top - 8;
+    let progress = 1 - nextSpawnTimer / 540;
+    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    ctx.beginPath(); ctx.roundRect(barX, barY, barW, barH, 3); ctx.fill();
+    ctx.fillStyle = 'rgba(255,120,50,0.6)';
+    ctx.beginPath(); ctx.roundRect(barX, barY, barW * progress, barH, 3); ctx.fill();
+  }
+}
+
+function draw() {
+  ctx.clearRect(0,0,W,H);
+  drawBackground();
+  for (let r=0;r<GRID.rows;r++) for (let c=0;c<GRID.cols;c++) if(!plantAt(r,c)){let pos=gridPos(r,c);drawPot(pos.x,pos.y+20,false);}
+  for (let m of lawnMowers) if(m.active) drawLawnmower(m);
+  drawHoverHighlight();
+  drawCountdown();
+  for (let p of plants) drawPlant(p);
+  for (let s of splashes) drawSplash(s);
+  for (let b of bullets) drawBullet(b);
+  let sz=[...zombies].sort((a,b)=>a.row-b.row||a.x-b.x);
+  for (let z of sz) drawZombie(z);
+  for (let s of suns) drawSun(s);
+  drawParticles();
+  drawCardSlot();
+  // Final warning before wave ends (last zombie)
+  if (!waveActive && waveSpawnIndex >= waveSpawnList.length && waveSpawnList.length > 0 && zombies.length > 0 && wave < totalWaves) {
+    // nothing — let the countdown bar show
+  }
+}
+
+let mouseX=0, mouseY=0, hoverGrid=null;
+canvas.addEventListener('mousemove',e=>{let r=canvas.getBoundingClientRect();mouseX=(e.clientX-r.left)*(W/r.width);mouseY=(e.clientY-r.top)*(H/r.height);hoverGrid=toGrid(mouseX,mouseY);});
+canvas.addEventListener('click',e=>{
+  if(state!=='playing') return;
+  let r=canvas.getBoundingClientRect(), mx=(e.clientX-r.left)*(W/r.width), my=(e.clientY-r.top)*(H/r.height);
+  for(let s of suns) if(!s.collecting&&dist(mx,my,s.x,s.y)<22){collectSun(s);return;}
+  let pX=10,pY=10;
+  for(let i=0;i<cards.length;i++){let cx=pX+6+i*36,cy=pY+6;if(mx>=cx&&mx<=cx+34&&my>=cy&&my<=cy+60){let c=cards[i];if(sun>=c.cost&&c.cooldown<=0){shovelMode=false;selectedCard=selectedCard===i?null:i;}else if(c.cooldown>0)showToast('Plant is recharging!');else showToast('Not enough sun!');return;}}
+  let sx=pX+6+cards.length*36+2,sy=pY+15;
+  if(mx>=sx&&mx<=sx+28&&my>=sy&&my<=sy+40){selectedCard=null;shovelMode=!shovelMode;return;}
+  let g=toGrid(mx,my);
+  if(g){
+    if(shovelMode){let p=plantAt(g.row,g.col);if(p){plants=plants.filter(pl=>pl!==p);let pos=gridPos(g.row,g.col);spawnParticles(pos.x,pos.y,'#a0724a',6,[2,4],[1,3]);shovelMode=false;}return;}
+    if(selectedCard!==null){let c=cards[selectedCard];if(plantAt(g.row,g.col)){showToast('There is already a plant here!');return;}if(sun<c.cost){showToast('Not enough sun!');return;}sun-=c.cost;plants.push({type:c.type,row:g.row,col:g.col,hp:c.hp,maxHp:c.hp,timer:0,animT:rand(0,10),firing:0});c.cooldown=c.cd;selectedCard=null;updateHUD();}
+  }else{selectedCard=null;shovelMode=false;}
+});
+canvas.addEventListener('contextmenu',e=>{e.preventDefault();selectedCard=null;shovelMode=false;});
+
+function updateHUD(){document.getElementById('sunTxt').textContent=sun;document.getElementById('waveTxt').textContent='Wave '+wave+'/'+totalWaves;}
+function showOverlay(title,sub,desc){const ol=document.getElementById('overlay');ol.classList.remove('hidden');ol.innerHTML=`<h1>${title}</h1><h2>${sub}</h2><p>${desc}</p><button class="btn" id="restartBtn">PLAY AGAIN</button>`;document.getElementById('restartBtn').addEventListener('click',()=>{ol.classList.add('hidden');initGame();state='playing';updateHUD();});}
+
+document.getElementById('startBtn').addEventListener('click',()=>{document.getElementById('overlay').classList.add('hidden');initGame();state='playing';updateHUD();});
+
+function gameLoop(){update();draw();requestAnimationFrame(gameLoop);}
+if(!ctx.roundRect){CanvasRenderingContext2D.prototype.roundRect=function(x,y,w,h,r){if(typeof r==='number')r=[r,r,r,r];this.moveTo(x+r[0],y);this.lineTo(x+w-r[1],y);this.quadraticCurveTo(x+w,y,x+w,y+r[1]);this.lineTo(x+w,y+h-r[2]);this.quadraticCurveTo(x+w,y+h,x+w-r[2],y+h);this.lineTo(x+r[3],y+h);this.quadraticCurveTo(x,y+h,x,y+h-r[3]);this.lineTo(x,y+r[0]);this.quadraticCurveTo(x,y,x+r[0],y);this.closePath();};}
+gameLoop();
+</script>
+</body>
+</html>
+
