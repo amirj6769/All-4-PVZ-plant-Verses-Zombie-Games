@@ -1,0 +1,1051 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Plants vs Zombies (Night Mode)</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#050a12;display:flex;justify-content:center;align-items:center;min-height:100vh;overflow:hidden;font-family:'Segoe UI',Tahoma,sans-serif}
+canvas{border-radius:6px;cursor:crosshair;box-shadow:0 0 60px rgba(80,40,120,0.25)}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+// ========== SETUP ==========
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 1050, H = 680;
+canvas.width = W; canvas.height = H;
+
+const COLS = 9, ROWS = 5, CELL_W = 85, CELL_H = 96;
+const GX = 190, GY = 105;
+const ZOMBIE_SPAWN_X = W + 20;
+
+// ========== GAME STATE ==========
+let state = 'menu', sun = 200, score = 0, frame = 0, wave = 0;
+let selectedPlant = null, shovelMode = false;
+let plants = [], zombies = [], projectiles = [], sunDrops = [], particles = [], lawnmowers = [];
+let waveDelay = 0, betweenWaves = 0;
+let mouseX = 0, mouseY = 0;
+let screenFlash = 0;
+let scorchMarks = [];
+let stars = [];
+for (let i = 0; i < 60; i++) stars.push({ x: Math.random()*W, y: Math.random()*GY, s: Math.random()*1.8+0.4, p: Math.random()*6.28 });
+let fireflies = [];
+for (let i = 0; i < 15; i++) fireflies.push({ x: Math.random()*W, y: GY+Math.random()*(H-GY-40), vx: (Math.random()-0.5)*0.4, vy: (Math.random()-0.5)*0.3, p: Math.random()*6.28 });
+
+// ========== MUSHROOM TYPES ==========
+const MUSH = {
+  peashroom:    { name:'Peashroom',    cost:50,  hp:100, cd:180,  desc:'Fires spore pellets' },
+  sunshroom:    { name:'Sunshroom',    cost:25,  hp:75,  cd:300,  desc:'Grows small then big sun', special:'sun' },
+  puffshroom:   { name:'Puffshroom',   cost:75,  hp:80,  cd:360,  desc:'Explodes in a 3x3 area' },
+  fumeshroom:   { name:'Fumeshroom',   cost:75,  hp:100, cd:300,  desc:'Piercing fog blast' },
+  magnetshroom: { name:'Magnetshroom', cost:100, hp:100, cd:500,  desc:'Steals metal buckets' },
+  doomshroom:   { name:'Doom-shroom',  cost:125, hp:50,  cd:900,  desc:'Massive 5x5 explosion' },
+  icemushroom:  { name:'Ice-shroom',   cost:75,  hp:60,  cd:600,  desc:'Freezes all zombies' },
+};
+const MUSH_KEYS = Object.keys(MUSH);
+
+// ========== ZOMBIE TYPES ==========
+const ZOMB = {
+  basic:  { hp:180,  spd:0.28, dmg:8,  name:'Zombie' },
+  cone:   { hp:380,  spd:0.28, dmg:8,  name:'Cone Zombie' },
+  bucket: { hp:650,  spd:0.26, dmg:9,  name:'Bucket Zombie' },
+};
+
+// ========== WAVES ==========
+function buildWaves() {
+  const waves = [
+    [{t:'basic',n:4}],
+    [{t:'basic',n:5},{t:'cone',n:1}],
+    [{t:'basic',n:4},{t:'cone',n:3}],
+    [{t:'basic',n:5},{t:'cone',n:4},{t:'bucket',n:1}],
+    [{t:'basic',n:7},{t:'cone',n:5},{t:'bucket',n:3}],
+  ];
+  let all = [];
+  waves.forEach((w,i) => {
+    w.forEach(g => { for(let j=0;j<g.n;j++) all.push({t:g.t,wave:i,rand:Math.random()}); });
+  });
+  all.sort((a,b) => a.rand - b.rand);
+  let grouped = {};
+  all.forEach(z => { if(!grouped[z.wave]) grouped[z.wave]=[]; grouped[z.wave].push(z.t); });
+  return grouped;
+}
+let allWaves = buildWaves();
+
+// ========== HELPERS ==========
+function cellCenter(col, row) { return { x: GX + col*CELL_W + CELL_W/2, y: GY + row*CELL_H + CELL_H/2 }; }
+function cellFromMouse(mx, my) {
+  let c = Math.floor((mx - GX)/CELL_W), r = Math.floor((my - GY)/CELL_H);
+  return (c>=0&&c<COLS&&r>=0&&r<ROWS) ? {col:c,row:r} : null;
+}
+function plantAt(c,r) { return plants.find(p=>p.col===c&&p.row===r); }
+function zombiesInRow(r) { return zombies.filter(z=>z.row===r&&z.hp>0); }
+
+// ========== DRAWING: MUSHROOMS ==========
+function drawPeashroom(x, y, t) {
+  ctx.fillStyle = '#c8d8c0';
+  ctx.beginPath(); ctx.moveTo(x-7,y+18); ctx.lineTo(x-9,y+38); ctx.lineTo(x+9,y+38); ctx.lineTo(x+7,y+18); ctx.fill();
+  ctx.fillStyle = '#e8547a';
+  ctx.beginPath(); ctx.ellipse(x, y+10, 22, 16, 0, Math.PI, 0); ctx.fill();
+  ctx.fillStyle = '#c93050';
+  ctx.beginPath(); ctx.ellipse(x, y+14, 22, 5, 0, 0, Math.PI); ctx.fill();
+  ctx.fillStyle = '#fff8';
+  [[-8,2,4],[6,4,3],[0,-2,3]].forEach(s => { ctx.beginPath(); ctx.arc(x+s[0],y+s[1],s[2],0,6.28); ctx.fill(); });
+  ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(x-5,y+24,3.5,0,6.28); ctx.fill();
+  ctx.beginPath(); ctx.arc(x+5,y+24,3.5,0,6.28); ctx.fill();
+  ctx.fillStyle='#222'; ctx.beginPath(); ctx.arc(x-4,y+25,1.8,0,6.28); ctx.fill();
+  ctx.beginPath(); ctx.arc(x+6,y+25,1.8,0,6.28); ctx.fill();
+}
+
+function drawSunshroom(x, y, t, stage) {
+  ctx.fillStyle = '#d4c870';
+  ctx.beginPath(); ctx.moveTo(x-6,y+16); ctx.lineTo(x-8,y+34); ctx.lineTo(x+8,y+34); ctx.lineTo(x+6,y+16); ctx.fill();
+  let scale = stage === 0 ? 0.6 : 1;
+  let glow = 0.5 + 0.3*Math.sin(t*0.05);
+  ctx.save(); ctx.translate(x,y+8); ctx.scale(scale,scale);
+  ctx.fillStyle = `rgba(255,220,60,${glow})`;
+  ctx.beginPath(); ctx.arc(0,0,20,0,6.28); ctx.fill();
+  ctx.fillStyle = '#ffd830';
+  ctx.beginPath(); ctx.ellipse(0,-2,18,13,0,Math.PI,0); ctx.fill();
+  ctx.fillStyle = '#e0b800';
+  ctx.beginPath(); ctx.ellipse(0,2,18,5,0,0,Math.PI); ctx.fill();
+  ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(-4,-6,3,0,6.28); ctx.fill();
+  ctx.beginPath(); ctx.arc(4,-6,3,0,6.28); ctx.fill();
+  ctx.fillStyle='#222'; ctx.beginPath(); ctx.arc(-3,-5,1.5,0,6.28); ctx.fill();
+  ctx.beginPath(); ctx.arc(5,-5,1.5,0,6.28); ctx.fill();
+  ctx.restore();
+}
+
+function drawPuffshroom(x, y, t) {
+  ctx.fillStyle = '#b0c8b0';
+  ctx.beginPath(); ctx.moveTo(x-5,y+12); ctx.lineTo(x-7,y+32); ctx.lineTo(x+7,y+32); ctx.lineTo(x+5,y+12); ctx.fill();
+  let r = 20 + 2*Math.sin(t*0.08);
+  ctx.fillStyle = '#9050b8';
+  ctx.beginPath(); ctx.arc(x,y+4,r,0,6.28); ctx.fill();
+  ctx.fillStyle = '#7038a0';
+  ctx.beginPath(); ctx.arc(x,y+10,r*0.7,0,Math.PI); ctx.fill();
+  ctx.fillStyle = 'rgba(200,160,255,0.5)';
+  for(let i=0;i<5;i++) { let a=i*1.25+t*0.02, d=12; ctx.beginPath(); ctx.arc(x+Math.cos(a)*d,y+4+Math.sin(a)*d,2,0,6.28); ctx.fill(); }
+  ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(x-5,y+3,3,0,6.28); ctx.fill();
+  ctx.beginPath(); ctx.arc(x+5,y+3,3,0,6.28); ctx.fill();
+  ctx.fillStyle='#222'; ctx.beginPath(); ctx.arc(x-4,y+4,1.8,0,6.28); ctx.fill();
+  ctx.beginPath(); ctx.arc(x+6,y+4,1.8,0,6.28); ctx.fill();
+  ctx.strokeStyle='#222'; ctx.lineWidth=1.5;
+  ctx.beginPath(); ctx.moveTo(x-8,y-1); ctx.lineTo(x-3,y+1); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x+8,y-1); ctx.lineTo(x+3,y+1); ctx.stroke();
+}
+
+function drawFumeshroom(x, y, t) {
+  ctx.fillStyle = '#80a898';
+  ctx.beginPath(); ctx.moveTo(x-6,y+14); ctx.lineTo(x-9,y+36); ctx.lineTo(x+9,y+36); ctx.lineTo(x+6,y+14); ctx.fill();
+  ctx.fillStyle = '#3a8858';
+  ctx.beginPath(); ctx.ellipse(x,y+6,16,20,0,Math.PI,0); ctx.fill();
+  ctx.fillStyle = '#2a6840';
+  ctx.beginPath(); ctx.ellipse(x,y+14,16,6,0,0,Math.PI); ctx.fill();
+  ctx.fillStyle = '#2a5038';
+  ctx.fillRect(x-3,y-8,6,12);
+  ctx.fillStyle = 'rgba(100,180,120,0.3)';
+  for(let i=0;i<3;i++) {
+    let wy = -14-i*8+Math.sin(t*0.04+i)*3;
+    let wx = Math.sin(t*0.03+i*2)*4;
+    ctx.beginPath(); ctx.arc(x+wx,y+wy,5+i*2,0,6.28); ctx.fill();
+  }
+  ctx.fillStyle='#d0ffd8'; ctx.beginPath(); ctx.arc(x-4,y+18,3,0,6.28); ctx.fill();
+  ctx.beginPath(); ctx.arc(x+4,y+18,3,0,6.28); ctx.fill();
+  ctx.fillStyle='#115530'; ctx.beginPath(); ctx.arc(x-3,y+19,1.5,0,6.28); ctx.fill();
+  ctx.beginPath(); ctx.arc(x+5,y+19,1.5,0,6.28); ctx.fill();
+}
+
+function drawMagnetshroom(x, y, t) {
+  ctx.fillStyle = '#b0b8c8';
+  ctx.beginPath(); ctx.moveTo(x-5,y+14); ctx.lineTo(x-7,y+34); ctx.lineTo(x+7,y+34); ctx.lineTo(x+5,y+14); ctx.fill();
+  ctx.fillStyle = '#4858a0';
+  ctx.beginPath(); ctx.ellipse(x,y+6,18,14,0,Math.PI,0); ctx.fill();
+  ctx.fillStyle = '#384888';
+  ctx.beginPath(); ctx.ellipse(x,y+12,18,5,0,0,Math.PI); ctx.fill();
+  let my = y - 10 + Math.sin(t*0.06)*2;
+  ctx.strokeStyle='#cc3030'; ctx.lineWidth=4; ctx.lineCap='round';
+  ctx.beginPath(); ctx.arc(x, my+6, 8, Math.PI, 0); ctx.stroke();
+  ctx.strokeStyle='#3060cc'; ctx.lineWidth=4;
+  ctx.beginPath(); ctx.arc(x, my+6, 8, 0, Math.PI); ctx.stroke();
+  ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(x-5,y+18,3,0,6.28); ctx.fill();
+  ctx.beginPath(); ctx.arc(x+5,y+18,3,0,6.28); ctx.fill();
+  ctx.fillStyle='#222'; ctx.beginPath(); ctx.arc(x-4,y+19,1.5,0,6.28); ctx.fill();
+  ctx.beginPath(); ctx.arc(x+6,y+19,1.5,0,6.28); ctx.fill();
+}
+
+function drawDoomshroom(x, y, t) {
+  ctx.fillStyle = '#8a7070';
+  ctx.beginPath(); ctx.moveTo(x-8,y+14); ctx.lineTo(x-10,y+38); ctx.lineTo(x+10,y+38); ctx.lineTo(x+8,y+14); ctx.fill();
+  let pulse = 0.15 + 0.1*Math.sin(t*0.07);
+  ctx.fillStyle = `rgba(255,60,20,${pulse})`;
+  ctx.beginPath(); ctx.arc(x, y+6, 30, 0, 6.28); ctx.fill();
+  ctx.fillStyle = '#a02020';
+  ctx.beginPath(); ctx.ellipse(x, y+4, 26, 20, 0, Math.PI, 0); ctx.fill();
+  ctx.fillStyle = '#801818';
+  ctx.beginPath(); ctx.ellipse(x, y+12, 26, 7, 0, 0, Math.PI); ctx.fill();
+  ctx.strokeStyle = '#ff4020'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(x-10,y-4); ctx.lineTo(x-3,y+6); ctx.lineTo(x+2,y+0); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x+5,y-6); ctx.lineTo(x+8,y+4); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x-4,y+2); ctx.lineTo(x+1,y+10); ctx.stroke();
+  ctx.fillStyle = 'rgba(255,120,40,0.6)';
+  [[-10,-2,3],[8,0,3.5],[0,-6,2.5],[14,4,2],[-6,8,2]].forEach(s => {
+    ctx.beginPath(); ctx.arc(x+s[0],y+s[1],s[2],0,6.28); ctx.fill();
+  });
+  ctx.fillStyle='#ff0'; ctx.beginPath(); ctx.arc(x-6,y+4,3.5,0,6.28); ctx.fill();
+  ctx.beginPath(); ctx.arc(x+6,y+4,3.5,0,6.28); ctx.fill();
+  ctx.fillStyle='#800'; ctx.beginPath(); ctx.arc(x-5,y+5,2,0,6.28); ctx.fill();
+  ctx.beginPath(); ctx.arc(x+7,y+5,2,0,6.28); ctx.fill();
+  ctx.strokeStyle='#600'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(x-10,y-1); ctx.lineTo(x-3,y+1); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x+10,y-1); ctx.lineTo(x+3,y+1); ctx.stroke();
+}
+
+function drawIcemushroom(x, y, t) {
+  // Icy stem
+  ctx.fillStyle = '#b8d8e8';
+  ctx.beginPath(); ctx.moveTo(x-7,y+16); ctx.lineTo(x-9,y+36); ctx.lineTo(x+9,y+36); ctx.lineTo(x+7,y+16); ctx.fill();
+  // Frost shimmer
+  let shimmer = 0.1 + 0.08*Math.sin(t*0.06);
+  ctx.fillStyle = `rgba(140,210,255,${shimmer})`;
+  ctx.beginPath(); ctx.arc(x, y+6, 28, 0, 6.28); ctx.fill();
+  // Light blue cap
+  ctx.fillStyle = '#80c8e8';
+  ctx.beginPath(); ctx.ellipse(x, y+6, 22, 17, 0, Math.PI, 0); ctx.fill();
+  ctx.fillStyle = '#60a8d0';
+  ctx.beginPath(); ctx.ellipse(x, y+13, 22, 6, 0, 0, Math.PI); ctx.fill();
+  // Ice crystal highlights
+  ctx.fillStyle = 'rgba(220,245,255,0.7)';
+  [[-8,-1,4],[5,1,3.5],[0,-5,3],[-14,5,2.5],[10,-2,2]].forEach(s => {
+    ctx.beginPath(); ctx.arc(x+s[0],y+s[1],s[2],0,6.28); ctx.fill();
+  });
+  // Crystal spikes on top
+  ctx.strokeStyle = '#c0e8ff'; ctx.lineWidth = 2; ctx.lineCap = 'round';
+  [[-6,-8,6],[0,-12,8],[6,-8,5],[12,-4,4],[-12,-3,4]].forEach(s => {
+    ctx.beginPath(); ctx.moveTo(x+s[0],y+s[1]); ctx.lineTo(x+s[0]+s[2]*0.4, y+s[1]-s[2]); ctx.stroke();
+  });
+  // Snowflake particles orbiting
+  ctx.fillStyle = 'rgba(200,240,255,0.5)';
+  for(let i=0;i<4;i++) {
+    let a = t*0.03 + i*1.57;
+    let d = 16;
+    ctx.beginPath(); ctx.arc(x+Math.cos(a)*d, y+6+Math.sin(a)*d, 1.8, 0, 6.28); ctx.fill();
+  }
+  // Calm eyes
+  ctx.fillStyle='#e8f8ff'; ctx.beginPath(); ctx.arc(x-5,y+18,3,0,6.28); ctx.fill();
+  ctx.beginPath(); ctx.arc(x+5,y+18,3,0,6.28); ctx.fill();
+  ctx.fillStyle='#2060a0'; ctx.beginPath(); ctx.arc(x-4,y+19,1.8,0,6.28); ctx.fill();
+  ctx.beginPath(); ctx.arc(x+6,y+19,1.8,0,6.28); ctx.fill();
+}
+
+function drawMushroom(p) {
+  let pos = cellCenter(p.col, p.row);
+  let x = pos.x, y = pos.y;
+  let t = frame + p.col*10 + p.row*7;
+  y += Math.sin(t*0.04)*2;
+  switch(p.type) {
+    case 'peashroom': drawPeashroom(x,y,t); break;
+    case 'sunshroom': drawSunshroom(x,y,t,p.stage||0); break;
+    case 'puffshroom': drawPuffshroom(x,y,t); break;
+    case 'fumeshroom': drawFumeshroom(x,y,t); break;
+    case 'magnetshroom': drawMagnetshroom(x,y,t); break;
+    case 'doomshroom': drawDoomshroom(x,y,t); break;
+    case 'icemushroom': drawIcemushroom(x,y,t); break;
+  }
+  if(p.hp < MUSH[p.type].hp) {
+    let bw=30, bh=4, bx=x-bw/2, by=pos.y+CELL_H/2-8;
+    ctx.fillStyle='#300'; ctx.fillRect(bx,by,bw,bh);
+    ctx.fillStyle='#0f0'; ctx.fillRect(bx,by,bw*(p.hp/MUSH[p.type].hp),bh);
+  }
+}
+
+// ========== DRAWING: ZOMBIES ==========
+function drawZombie(z) {
+  let x = z.x, y = GY + z.row*CELL_H + CELL_H/2;
+  let bob = Math.sin(frame*0.08 + z.id)*3;
+  let walk = z.eating ? 0 : Math.sin(frame*0.1+z.id)*4;
+  y += bob;
+
+  // Frozen tint
+  let frozen = z.frozen > 0;
+
+  if(frozen) {
+    ctx.fillStyle = 'rgba(100,180,240,0.12)';
+    ctx.beginPath(); ctx.ellipse(x, y+5, 20, 30, 0, 0, 6.28); ctx.fill();
+  }
+
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.beginPath(); ctx.ellipse(x, GY+z.row*CELL_H+CELL_H-6, 14, 4, 0, 0, 6.28); ctx.fill();
+
+  let legCol = frozen ? '#4a5a7a' : '#4a5a4a';
+  ctx.fillStyle = legCol;
+  ctx.fillRect(x-9, y+14+walk*0.5, 7, 20);
+  ctx.fillRect(x+2, y+14-walk*0.5, 7, 20);
+
+  let bodyCol = frozen ? '#5a6a8a' : '#5a6a5a';
+  ctx.fillStyle = bodyCol;
+  ctx.fillRect(x-12, y-10, 24, 28);
+  ctx.fillStyle = frozen ? '#4a5a78' : '#4a5a48';
+  ctx.fillRect(x-10, y-8, 20, 6);
+
+  let armAngle = z.eating ? Math.sin(frame*0.15)*0.3 : -0.5 + Math.sin(frame*0.08+z.id)*0.2;
+  let armCol = frozen ? '#7a9ab0' : '#7a9a70';
+  ctx.save(); ctx.translate(x-12, y-2); ctx.rotate(armAngle);
+  ctx.fillStyle = armCol; ctx.fillRect(0,-3,22,6); ctx.restore();
+  ctx.save(); ctx.translate(x+12, y-2); ctx.rotate(-armAngle);
+  ctx.fillStyle = armCol; ctx.fillRect(-22,-3,22,6); ctx.restore();
+
+  let headCol = frozen ? '#8aafcc' : '#7a9a70';
+  ctx.fillStyle = headCol;
+  ctx.beginPath(); ctx.arc(x, y-18, 13, 0, 6.28); ctx.fill();
+
+  ctx.fillStyle = frozen ? '#80c0ff' : '#ff4444';
+  ctx.beginPath(); ctx.arc(x-5, y-20, 2.5, 0, 6.28); ctx.fill();
+  ctx.beginPath(); ctx.arc(x+5, y-20, 2.5, 0, 6.28); ctx.fill();
+  ctx.fillStyle = '#220000';
+  ctx.beginPath(); ctx.arc(x-5, y-20, 1.2, 0, 6.28); ctx.fill();
+  ctx.beginPath(); ctx.arc(x+5, y-20, 1.2, 0, 6.28); ctx.fill();
+
+  ctx.strokeStyle = frozen ? '#5a8aaa' : '#3a4a30'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.arc(x, y-12, 5, 0.2, Math.PI-0.2); ctx.stroke();
+
+  // Ice crystals on frozen zombies
+  if(frozen) {
+    ctx.strokeStyle = 'rgba(180,230,255,0.6)'; ctx.lineWidth = 1.5;
+    [[-8,-22,5],[10,-15,4],[5,-28,4],[-12,-10,3],[14,-8,3]].forEach(s => {
+      ctx.beginPath(); ctx.moveTo(x+s[0],y+s[1]); ctx.lineTo(x+s[0]+s[2]*0.3,y+s[1]-s[2]); ctx.stroke();
+    });
+  }
+
+  if(z.ztype === 'cone' && z.armorHp > 0) {
+    ctx.fillStyle = frozen ? '#c0b060' : '#e8a020';
+    ctx.beginPath(); ctx.moveTo(x, y-44); ctx.lineTo(x-12, y-18); ctx.lineTo(x+12, y-18); ctx.fill();
+    ctx.fillStyle = frozen ? '#a09050' : '#d08818';
+    ctx.beginPath(); ctx.moveTo(x, y-44); ctx.lineTo(x-6, y-18); ctx.lineTo(x+6, y-18); ctx.fill();
+  }
+  if(z.ztype === 'bucket' && z.armorHp > 0) {
+    ctx.fillStyle = frozen ? '#8098a8' : '#808890';
+    ctx.fillRect(x-13, y-36, 26, 22);
+    ctx.fillStyle = frozen ? '#687880' : '#686e76';
+    ctx.fillRect(x-14, y-16, 28, 4);
+    ctx.fillStyle = frozen ? '#90a8b0' : '#909aa0';
+    ctx.fillRect(x-11, y-34, 22, 3);
+  }
+
+  let maxHp = ZOMB[z.ztype].hp + (z.ztype==='cone'?200:0) + (z.ztype==='bucket'?470:0);
+  let bw=28, bh=3, bx=x-bw/2, by=GY+z.row*CELL_H+CELL_H-14;
+  ctx.fillStyle='#300'; ctx.fillRect(bx,by,bw,bh);
+  ctx.fillStyle = frozen ? '#48f' : '#f44';
+  ctx.fillRect(bx,by,bw*(z.hp+z.armorHp)/maxHp,bh);
+}
+
+// ========== DRAWING: PROJECTILES ==========
+function drawProjectile(p) {
+  if(p.ptype === 'spore') {
+    ctx.fillStyle = 'rgba(160,224,160,0.3)';
+    ctx.beginPath(); ctx.arc(p.x, p.y, 9, 0, 6.28); ctx.fill();
+    ctx.fillStyle = '#a0e0a0';
+    ctx.beginPath(); ctx.arc(p.x, p.y, 5, 0, 6.28); ctx.fill();
+  } else if(p.ptype === 'fogblast') {
+    ctx.fillStyle = 'rgba(120,255,140,0.3)';
+    ctx.beginPath(); ctx.arc(p.x, p.y, 18, 0, 6.28); ctx.fill();
+    ctx.fillStyle = 'rgba(80,200,100,0.5)';
+    ctx.beginPath(); ctx.arc(p.x, p.y, 12, 0, 6.28); ctx.fill();
+  }
+}
+
+// ========== DRAWING: SUN ==========
+function drawSunDrop(s) {
+  let pulse = 1 + 0.1*Math.sin(frame*0.1+s.x);
+  let r = (s.value >= 50 ? 16 : 11) * pulse;
+  ctx.fillStyle = 'rgba(255,240,60,0.25)';
+  ctx.beginPath(); ctx.arc(s.x, s.y, r+8, 0, 6.28); ctx.fill();
+  ctx.fillStyle = '#ffe830';
+  ctx.beginPath(); ctx.arc(s.x, s.y, r, 0, 6.28); ctx.fill();
+  ctx.fillStyle = '#fff8a0';
+  ctx.beginPath(); ctx.arc(s.x-3, s.y-3, r*0.4, 0, 6.28); ctx.fill();
+  ctx.fillStyle = '#222'; ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'center';
+  ctx.fillText(s.value, s.x, s.y+4);
+}
+
+// ========== DRAWING: LAWNMOWERS ==========
+function drawLawnmower(lm) {
+  let x = lm.x, y = GY + lm.row*CELL_H + CELL_H/2 + 15;
+  ctx.fillStyle = '#666'; ctx.fillRect(x-14,y-8,28,16);
+  ctx.fillStyle = '#888'; ctx.fillRect(x-18,y-4,8,8);
+  ctx.fillStyle = '#c00'; ctx.fillRect(x+10,y-6,6,4);
+  ctx.fillStyle = '#444';
+  ctx.beginPath(); ctx.arc(x-8,y+10,5,0,6.28); ctx.fill();
+  ctx.beginPath(); ctx.arc(x+8,y+10,5,0,6.28); ctx.fill();
+}
+
+// ========== DRAWING: BACKGROUND ==========
+function drawBackground() {
+  let grad = ctx.createLinearGradient(0,0,0,H);
+  grad.addColorStop(0, '#060d1a');
+  grad.addColorStop(0.3, '#0c1a2e');
+  grad.addColorStop(1, '#0a1520');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0,0,W,H);
+
+  stars.forEach(s => {
+    let bright = 0.4 + 0.4*Math.sin(frame*0.03+s.p);
+    ctx.fillStyle = `rgba(200,220,255,${bright})`;
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.s, 0, 6.28); ctx.fill();
+  });
+
+  ctx.fillStyle = 'rgba(220,230,255,0.12)';
+  ctx.beginPath(); ctx.arc(W-100, 55, 45, 0, 6.28); ctx.fill();
+  ctx.fillStyle = 'rgba(230,240,255,0.2)';
+  ctx.beginPath(); ctx.arc(W-100, 55, 32, 0, 6.28); ctx.fill();
+  ctx.fillStyle = '#d8e4ff';
+  ctx.beginPath(); ctx.arc(W-100, 55, 26, 0, 6.28); ctx.fill();
+  ctx.fillStyle = '#c0ccf0';
+  ctx.beginPath(); ctx.arc(W-108, 48, 5, 0, 6.28); ctx.fill();
+  ctx.beginPath(); ctx.arc(W-94, 60, 3, 0, 6.28); ctx.fill();
+
+  for(let r=0;r<ROWS;r++) {
+    for(let c=0;c<COLS;c++) {
+      let x = GX+c*CELL_W, y = GY+r*CELL_H;
+      let dark = (r+c)%2===0;
+      ctx.fillStyle = dark ? '#152a18' : '#1a3320';
+      ctx.fillRect(x,y,CELL_W,CELL_H);
+      ctx.strokeStyle = dark ? '#1d3520' : '#224028';
+      ctx.lineWidth = 0.5;
+      for(let g=0;g<3;g++) {
+        let gx = x + 15 + g*22;
+        ctx.beginPath(); ctx.moveTo(gx,y+CELL_H-5); ctx.lineTo(gx-3,y+CELL_H-15); ctx.stroke();
+      }
+    }
+  }
+
+  ctx.strokeStyle = 'rgba(100,180,100,0.08)';
+  ctx.lineWidth = 1;
+  for(let c=0;c<=COLS;c++) { ctx.beginPath(); ctx.moveTo(GX+c*CELL_W,GY); ctx.lineTo(GX+c*CELL_W,GY+ROWS*CELL_H); ctx.stroke(); }
+  for(let r=0;r<=ROWS;r++) { ctx.beginPath(); ctx.moveTo(GX,GY+r*CELL_H); ctx.lineTo(GX+COLS*CELL_W,GY+r*CELL_H); ctx.stroke(); }
+
+  ctx.fillStyle = '#1a1510';
+  ctx.fillRect(0, GY, GX, ROWS*CELL_H);
+
+  for(let i=0;i<3;i++) {
+    ctx.fillStyle = `rgba(20,40,30,${0.08-i*0.02})`;
+    let fy = GY + ROWS*CELL_H - 40 + i*25;
+    for(let fx=0;fx<W;fx+=60) {
+      let offset = Math.sin(frame*0.008+fx*0.01+i)*20;
+      ctx.beginPath(); ctx.arc(fx+offset, fy, 40+i*10, 0, 6.28); ctx.fill();
+    }
+  }
+
+  fireflies.forEach(f => {
+    f.x += f.vx; f.y += f.vy;
+    if(f.x<0||f.x>W) f.vx*=-1;
+    if(f.y<GY||f.y>H-20) f.vy*=-1;
+    let bright = 0.3 + 0.5*Math.sin(frame*0.05+f.p);
+    ctx.fillStyle = `rgba(180,255,100,${bright})`;
+    ctx.beginPath(); ctx.arc(f.x, f.y, 2, 0, 6.28); ctx.fill();
+    ctx.fillStyle = `rgba(180,255,100,${bright*0.2})`;
+    ctx.beginPath(); ctx.arc(f.x, f.y, 8, 0, 6.28); ctx.fill();
+  });
+}
+
+// ========== DRAWING: UI ==========
+function drawUI() {
+  ctx.fillStyle = 'rgba(10,15,20,0.88)';
+  ctx.fillRect(0,0,W,88);
+  ctx.fillStyle = 'rgba(60,80,60,0.3)';
+  ctx.fillRect(0,86,W,2);
+
+  drawSunDrop({x:28, y:30, value:0});
+  ctx.fillStyle = '#ffe830'; ctx.font = 'bold 20px sans-serif'; ctx.textAlign = 'left';
+  ctx.fillText(sun, 48, 36);
+
+  ctx.fillStyle = '#8a8'; ctx.font = '12px sans-serif';
+  ctx.fillText('Score: '+score, 25, 62);
+
+  ctx.fillStyle = '#aac'; ctx.font = '13px sans-serif'; ctx.textAlign = 'right';
+  ctx.fillText('Wave '+(wave+1)+' / 5', W-15, 22);
+  if(betweenWaves > 0) {
+    ctx.fillStyle = '#ff8'; ctx.font = '11px sans-serif';
+    ctx.fillText('Next wave in '+Math.ceil(betweenWaves/60)+'s', W-15, 40);
+  }
+
+  // Shovel
+  let sx = 120, sy = 42;
+  ctx.fillStyle = shovelMode ? '#a05030' : '#6a4a3a';
+  ctx.strokeStyle = shovelMode ? '#ff8040' : '#8a6a5a';
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.roundRect(sx-16,sy-14,32,28,4); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#c8a070'; ctx.fillRect(sx-2,sy-10,5,18);
+  ctx.fillStyle = '#808080'; ctx.fillRect(sx-8,sy+5,18,5);
+
+  // Cards — 7 cards, compact
+  MUSH_KEYS.forEach((key, i) => {
+    let m = MUSH[key];
+    let cx = 168 + i*93, cy = 3, cw = 88, ch = 78;
+    let canAfford = sun >= m.cost;
+    let isSelected = selectedPlant === key;
+    let onCooldown = m._cd > 0;
+
+    ctx.fillStyle = isSelected ? 'rgba(80,160,80,0.35)' : 'rgba(30,45,30,0.7)';
+    ctx.strokeStyle = isSelected ? '#6c6' : (canAfford&&!onCooldown ? '#4a6a4a' : '#333');
+    ctx.lineWidth = isSelected ? 2.5 : 1.5;
+    ctx.beginPath(); ctx.roundRect(cx,cy,cw,ch,4); ctx.fill(); ctx.stroke();
+
+    if(onCooldown) {
+      let cdPct = m._cd / m.cd;
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      ctx.fillRect(cx,cy,cw,ch*cdPct);
+    }
+
+    ctx.save(); ctx.translate(cx+18, cy+28); ctx.scale(0.38,0.38);
+    switch(key) {
+      case 'peashroom': drawPeashroom(0,0,frame); break;
+      case 'sunshroom': drawSunshroom(0,0,frame,1); break;
+      case 'puffshroom': drawPuffshroom(0,0,frame); break;
+      case 'fumeshroom': drawFumeshroom(0,0,frame); break;
+      case 'magnetshroom': drawMagnetshroom(0,0,frame); break;
+      case 'doomshroom': drawDoomshroom(0,0,frame); break;
+      case 'icemushroom': drawIcemushroom(0,0,frame); break;
+    }
+    ctx.restore();
+
+    ctx.fillStyle = canAfford&&!onCooldown ? '#d4e8d4' : '#666';
+    ctx.font = 'bold 9px sans-serif'; ctx.textAlign = 'left';
+    ctx.fillText(m.name, cx+36, cy+24);
+    ctx.font = '8px sans-serif';
+    ctx.fillText(m.cost+' sun', cx+36, cy+35);
+    ctx.fillStyle = '#8a8a6a';
+    ctx.font = '7px sans-serif';
+    ctx.fillText(m.desc, cx+3, cy+70);
+  });
+
+  if(selectedPlant && state === 'playing') {
+    let cell = cellFromMouse(mouseX, mouseY);
+    if(cell && !plantAt(cell.col, cell.row)) {
+      ctx.globalAlpha = 0.5;
+      drawMushroom({type:selectedPlant, col:cell.col, row:cell.row, hp:100, stage:1});
+      ctx.globalAlpha = 1;
+      if(selectedPlant === 'doomshroom') {
+        let pos = cellCenter(cell.col, cell.row);
+        ctx.strokeStyle = 'rgba(255,60,20,0.35)'; ctx.lineWidth = 2;
+        ctx.setLineDash([6,4]);
+        ctx.strokeRect(pos.x - CELL_W*2.5, pos.y - CELL_H*2.5, CELL_W*5, CELL_H*5);
+        ctx.setLineDash([]);
+        ctx.fillStyle = 'rgba(255,60,20,0.06)';
+        ctx.fillRect(pos.x - CELL_W*2.5, pos.y - CELL_H*2.5, CELL_W*5, CELL_H*5);
+      }
+      if(selectedPlant === 'icemushroom') {
+        let pos = cellCenter(cell.col, cell.row);
+        ctx.strokeStyle = 'rgba(100,200,255,0.35)'; ctx.lineWidth = 2;
+        ctx.setLineDash([6,4]);
+        ctx.strokeRect(GX, GY, COLS*CELL_W, ROWS*CELL_H);
+        ctx.setLineDash([]);
+        ctx.fillStyle = 'rgba(100,200,255,0.04)';
+        ctx.fillRect(GX, GY, COLS*CELL_W, ROWS*CELL_H);
+      }
+    }
+  }
+  if(shovelMode && state === 'playing') {
+    let cell = cellFromMouse(mouseX, mouseY);
+    if(cell) {
+      ctx.strokeStyle = 'rgba(255,80,40,0.5)'; ctx.lineWidth = 3;
+      ctx.strokeRect(GX+cell.col*CELL_W+2, GY+cell.row*CELL_H+2, CELL_W-4, CELL_H-4);
+    }
+  }
+}
+
+// ========== PARTICLES ==========
+function addParticle(x, y, color, count, speed, life) {
+  for(let i=0;i<count;i++) {
+    let a = Math.random()*6.28, s = Math.random()*speed;
+    particles.push({x, y, vx:Math.cos(a)*s, vy:Math.sin(a)*s-1, life:life||40, maxLife:life||40, color, size:Math.random()*4+2});
+  }
+}
+
+function updateParticles() {
+  for(let i=particles.length-1;i>=0;i--) {
+    let p = particles[i];
+    p.x += p.vx; p.y += p.vy; p.vy += 0.05; p.life--;
+    if(p.life <= 0) particles.splice(i,1);
+  }
+}
+
+function drawParticles() {
+  particles.forEach(p => {
+    let alpha = p.life / p.maxLife;
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = p.color;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.size*alpha, 0, 6.28); ctx.fill();
+  });
+  ctx.globalAlpha = 1;
+}
+
+// ========== DOOM-SHROOM EXPLOSION ==========
+function triggerDoomshroom(col, row) {
+  let pos = cellCenter(col, row);
+  screenFlash = 25;
+  addParticle(pos.x, pos.y, '#ff4010', 40, 6, 60);
+  addParticle(pos.x, pos.y, '#ff8020', 30, 5, 50);
+  addParticle(pos.x, pos.y, '#ffc040', 20, 4, 45);
+  addParticle(pos.x, pos.y, '#ffe880', 15, 3, 35);
+  addParticle(pos.x, pos.y, '#801000', 10, 7, 70);
+  zombies.forEach(z => {
+    if(z.hp <= 0) return;
+    if(Math.abs(z.row - row) <= 2 && Math.abs(z.x - pos.x) < CELL_W*2.5) {
+      z.hp = 0; z.armorHp = 0;
+    }
+  });
+  for(let i=plants.length-1;i>=0;i--) {
+    let p = plants[i];
+    if(Math.abs(p.col - col) <= 2 && Math.abs(p.row - row) <= 2) {
+      let pp = cellCenter(p.col, p.row);
+      addParticle(pp.x, pp.y, '#604020', 5, 2, 30);
+    }
+  }
+  plants = plants.filter(p => Math.abs(p.col - col) > 2 || Math.abs(p.row - row) > 2);
+  for(let dc=-2;dc<=2;dc++) for(let dr=-2;dr<=2;dr++) {
+    let sc = cellCenter(col+dc, row+dr);
+    if(col+dc>=0&&col+dc<COLS&&row+dr>=0&&row+dr<ROWS)
+      addParticle(sc.x+Math.random()*20-10, sc.y+Math.random()*20-10, '#402008', 2, 1, 80);
+  }
+}
+
+// ========== ICE-SHROOM FREEZE ==========
+let iceFlash = 0;
+function triggerIceshroom(col, row) {
+  let pos = cellCenter(col, row);
+  iceFlash = 30;
+  // Ice burst particles from the shroom
+  addParticle(pos.x, pos.y, '#c0e8ff', 25, 5, 50);
+  addParticle(pos.x, pos.y, '#80c0ff', 20, 6, 55);
+  addParticle(pos.x, pos.y, '#e0f4ff', 15, 4, 40);
+  // Ice particles across all zombies
+  zombies.forEach(z => {
+    if(z.hp <= 0) return;
+    let zy = GY + z.row*CELL_H + CELL_H/2;
+    addParticle(z.x, zy-20, '#a0d8ff', 8, 3, 45);
+    addParticle(z.x, zy, '#c8e8ff', 5, 2, 35);
+    z.frozen = 300; // 5 seconds at 60fps
+  });
+  // Frost rings expanding outward
+  for(let i=0;i<5;i++) {
+    particles.push({x:pos.x, y:pos.y, vx:0, vy:0, life:40+i*8, maxLife:40+i*8, color:'rgba(140,210,255,0.3)', size:10, ring:true, ringR:0, ringSpeed:4+i*1.5});
+  }
+}
+
+// ========== SCORCH MARKS ==========
+function addScorchMark(col, row) { scorchMarks.push({col, row, alpha:0.6}); }
+function updateScorchMarks() {
+  for(let i=scorchMarks.length-1;i>=0;i--) {
+    scorchMarks[i].alpha -= 0.0003;
+    if(scorchMarks[i].alpha <= 0) scorchMarks.splice(i,1);
+  }
+}
+function drawScorchMarks() {
+  scorchMarks.forEach(s => {
+    if(s.col<0||s.col>=COLS||s.row<0||s.row>=ROWS) return;
+    let pos = cellCenter(s.col, s.row);
+    ctx.fillStyle = `rgba(30,15,5,${s.alpha})`;
+    ctx.beginPath(); ctx.ellipse(pos.x, pos.y, CELL_W*0.45, CELL_H*0.4, 0, 0, 6.28); ctx.fill();
+    ctx.fillStyle = `rgba(60,30,10,${s.alpha*0.5})`;
+    ctx.beginPath(); ctx.ellipse(pos.x, pos.y, CELL_W*0.3, CELL_H*0.25, 0, 0, 6.28); ctx.fill();
+  });
+}
+
+// ========== PLANT LOGIC ==========
+function initCooldowns() { MUSH_KEYS.forEach(k => MUSH[k]._cd = 0); }
+
+function updatePlants() {
+  MUSH_KEYS.forEach(k => { if(MUSH[k]._cd > 0) MUSH[k]._cd--; });
+  let doomTriggers = [], iceTriggers = [];
+
+  plants.forEach(p => {
+    p.timer = (p.timer||0) + 1;
+    let pos = cellCenter(p.col, p.row);
+
+    switch(p.type) {
+      case 'peashroom': {
+        if(p.timer % 85 === 0 && zombiesInRow(p.row).length > 0)
+          projectiles.push({ptype:'spore', x:pos.x+20, y:pos.y+8, row:p.row, speed:4.5, dmg:20, pierce:false});
+        break;
+      }
+      case 'sunshroom': {
+        let interval = p.stage === 0 ? 800 : 360;
+        if(p.timer % interval === 0) {
+          let val = p.stage === 0 ? 25 : 50;
+          sunDrops.push({x:pos.x, y:pos.y-20, value:val, vy:-1.5, life:480, targetY:pos.y+20+Math.random()*40});
+          if(p.stage === 0 && p.timer > 600) p.stage = 1;
+        }
+        break;
+      }
+      case 'puffshroom': {
+        if(p.hp <= 0) {
+          zombies.filter(z => Math.abs(z.row - p.row) <= 1 && Math.abs(z.x - pos.x) < CELL_W*1.5)
+            .forEach(z => { z.hp -= 180; z.armorHp = 0; });
+          addParticle(pos.x, pos.y, '#c080ff', 20, 4, 50);
+        }
+        break;
+      }
+      case 'fumeshroom': {
+        if(p.timer % 110 === 0 && zombiesInRow(p.row).length > 0)
+          projectiles.push({ptype:'fogblast', x:pos.x+20, y:pos.y+4, row:p.row, speed:3.5, dmg:10, pierce:true, hitSet:new Set()});
+        break;
+      }
+      case 'magnetshroom': {
+        if(p.timer % 90 === 0) {
+          let targets = zombies.filter(z => z.row === p.row && z.ztype === 'bucket' && z.armorHp > 0 && Math.abs(z.x - pos.x) < CELL_W*3);
+          if(targets.length > 0) {
+            let t = targets[0]; t.armorHp = 0; t.ztype = 'basic';
+            addParticle(t.x, GY+t.row*CELL_H+CELL_H/2-20, '#8090c0', 12, 3, 35);
+            score += 10;
+          }
+        }
+        break;
+      }
+      case 'doomshroom': {
+        if(p.hp <= 0) doomTriggers.push({col:p.col, row:p.row});
+        break;
+      }
+      case 'icemushroom': {
+        if(p.hp <= 0) iceTriggers.push({col:p.col, row:p.row});
+        break;
+      }
+    }
+  });
+
+  for(let i=plants.length-1;i>=0;i--) {
+    if(plants[i].hp <= 0 && plants[i].type !== 'puffshroom' && plants[i].type !== 'doomshroom' && plants[i].type !== 'icemushroom') {
+      let pos = cellCenter(plants[i].col, plants[i].row);
+      addParticle(pos.x, pos.y, '#80a080', 8, 2, 30);
+      plants.splice(i,1);
+    }
+  }
+  plants = plants.filter(p => p.hp > 0);
+
+  doomTriggers.forEach(d => {
+    triggerDoomshroom(d.col, d.row);
+    for(let dc=-2;dc<=2;dc++) for(let dr=-2;dr<=2;dr++) addScorchMark(d.col+dc, d.row+dr);
+  });
+  iceTriggers.forEach(d => { triggerIceshroom(d.col, d.row); });
+}
+
+// ========== ZOMBIE LOGIC ==========
+let zombieIdCounter = 0;
+function spawnZombie(ztype, row) {
+  let z = ZOMB[ztype];
+  zombies.push({
+    id: zombieIdCounter++, ztype, row,
+    x: ZOMBIE_SPAWN_X + Math.random()*80,
+    hp: z.hp,
+    armorHp: ztype==='cone'?200 : ztype==='bucket'?470 : 0,
+    speed: z.spd, dmg: z.dmg,
+    eating: false, eatTarget: null,
+    frozen: 0,
+  });
+}
+
+function updateZombies() {
+  zombies.forEach(z => {
+    if(z.hp <= 0) return;
+    if(z.frozen > 0) { z.frozen--; return; }
+
+    z.eating = false; z.eatTarget = null;
+    for(let p of plants) {
+      if(p.row === z.row) {
+        let pos = cellCenter(p.col, p.row);
+        if(z.x - pos.x < 25 && z.x - pos.x > -10) {
+          z.eating = true; z.eatTarget = p; break;
+        }
+      }
+    }
+    if(z.eating && z.eatTarget) {
+      if(frame % 30 === 0) z.eatTarget.hp -= z.dmg;
+    } else {
+      z.x -= z.speed;
+    }
+    if(z.x < GX - 10) {
+      let lm = lawnmowers.find(l => l.row === z.row && !l.activated);
+      if(lm) {
+        lm.activated = true;
+        zombies.filter(zz => zz.row === z.row && zz.hp > 0).forEach(zz => { zz.hp = 0; score += 20; });
+      } else {
+        state = 'lost';
+      }
+    }
+  });
+
+  for(let i=zombies.length-1;i>=0;i--) {
+    if(zombies[i].hp <= 0) {
+      let z = zombies[i];
+      addParticle(z.x, GY+z.row*CELL_H+CELL_H/2, '#5a7a50', 10, 2.5, 40);
+      score += (z.ztype==='bucket'?30:z.ztype==='cone'?20:10);
+      zombies.splice(i,1);
+    }
+  }
+}
+
+// ========== PROJECTILE LOGIC ==========
+function updateProjectiles() {
+  for(let i=projectiles.length-1;i>=0;i--) {
+    let p = projectiles[i];
+    p.x += p.speed;
+    if(p.x > W + 20) { projectiles.splice(i,1); continue; }
+    let hit = false;
+    zombies.forEach(z => {
+      if(z.row === p.row && z.hp > 0 && Math.abs(p.x - z.x) < 18) {
+        if(p.pierce) {
+          if(!p.hitSet.has(z.id)) {
+            p.hitSet.add(z.id); z.hp -= p.dmg;
+            addParticle(p.x, p.y, '#80c080', 3, 1.5, 20);
+          }
+        } else {
+          if(z.armorHp > 0) { z.armorHp -= p.dmg; if(z.armorHp < 0) { z.hp += z.armorHp; z.armorHp = 0; } }
+          else { z.hp -= p.dmg; }
+          addParticle(p.x, p.y, '#a0e0a0', 4, 2, 20);
+          hit = true;
+        }
+      }
+    });
+    if(hit) projectiles.splice(i,1);
+  }
+}
+
+// ========== SUN LOGIC ==========
+function updateSuns() {
+  for(let i=sunDrops.length-1;i>=0;i--) {
+    let s = sunDrops[i];
+    if(s.y < s.targetY) s.y += s.vy;
+    s.life--;
+    if(s.life <= 0) sunDrops.splice(i,1);
+  }
+}
+function drawSuns() { sunDrops.forEach(s => drawSunDrop(s)); }
+
+// ========== LAWNMOWER LOGIC ==========
+function updateLawnmowers() {
+  lawnmowers.forEach(lm => { if(lm.activated) lm.x += 5; });
+  lawnmowers = lawnmowers.filter(lm => !lm.activated || lm.x < W+50);
+}
+
+// ========== WAVE LOGIC ==========
+function updateWaves() {
+  if(betweenWaves > 0) { betweenWaves--; return; }
+  if(!allWaves[wave]) { if(zombies.length === 0) state = 'won'; return; }
+  let queue = allWaves[wave];
+  if(waveDelay > 0) { waveDelay--; return; }
+  if(queue.length > 0) {
+    spawnZombie(queue.shift(), Math.floor(Math.random()*ROWS));
+    waveDelay = 120 + Math.floor(Math.random()*180);
+  } else {
+    if(zombies.length === 0) { wave++; betweenWaves = 300; }
+  }
+}
+
+// ========== INPUT ==========
+canvas.addEventListener('mousemove', e => {
+  let rect = canvas.getBoundingClientRect();
+  mouseX = (e.clientX - rect.left) * (W / rect.width);
+  mouseY = (e.clientY - rect.top) * (H / rect.height);
+});
+
+canvas.addEventListener('click', e => {
+  let rect = canvas.getBoundingClientRect();
+  let mx = (e.clientX - rect.left) * (W / rect.width);
+  let my = (e.clientY - rect.top) * (H / rect.height);
+
+  if(state === 'menu') { startGame(); return; }
+  if(state === 'won' || state === 'lost') { state = 'menu'; return; }
+  if(state !== 'playing') return;
+
+  for(let i=sunDrops.length-1;i>=0;i--) {
+    if(Math.hypot(mx-sunDrops[i].x, my-sunDrops[i].y) < 22) {
+      sun += sunDrops[i].value; sunDrops.splice(i,1);
+      addParticle(mx, my, '#ffe830', 6, 2, 25); return;
+    }
+  }
+
+  if(mx > 104 && mx < 136 && my > 28 && my < 56) {
+    shovelMode = !shovelMode; selectedPlant = null; return;
+  }
+
+  MUSH_KEYS.forEach((key, i) => {
+    let cx = 168+i*93, cy=3, cw=88, ch=78;
+    if(mx>=cx && mx<=cx+cw && my>=cy && my<=cy+ch) {
+      if(sun >= MUSH[key].cost && MUSH[key]._cd <= 0) {
+        selectedPlant = selectedPlant === key ? null : key;
+        shovelMode = false;
+      }
+    }
+  });
+
+  let cell = cellFromMouse(mx, my);
+  if(cell) {
+    if(shovelMode) {
+      let idx = plants.findIndex(p => p.col===cell.col && p.row===cell.row);
+      if(idx >= 0) {
+        addParticle(cellCenter(cell.col,cell.row).x, cellCenter(cell.col,cell.row).y, '#a08050', 6, 2, 25);
+        plants.splice(idx,1); shovelMode = false;
+      }
+      return;
+    }
+    if(selectedPlant) {
+      if(!plantAt(cell.col, cell.row)) {
+        let m = MUSH[selectedPlant];
+        if(sun >= m.cost && m._cd <= 0) {
+          sun -= m.cost; m._cd = m.cd;
+          plants.push({ type: selectedPlant, col: cell.col, row: cell.row, hp: m.hp, timer: 0, stage: selectedPlant==='sunshroom' ? 0 : 1 });
+          let pos = cellCenter(cell.col, cell.row);
+          addParticle(pos.x, pos.y, '#a0e0a0', 8, 2, 25);
+          selectedPlant = null;
+        }
+      }
+    }
+  }
+});
+
+canvas.addEventListener('contextmenu', e => { e.preventDefault(); selectedPlant = null; shovelMode = false; });
+
+// ========== GAME FLOW ==========
+function startGame() {
+  state = 'playing'; sun = 200; score = 0; frame = 0; wave = 0;
+  plants = []; zombies = []; projectiles = []; sunDrops = []; particles = [];
+  selectedPlant = null; shovelMode = false;
+  scorchMarks = []; screenFlash = 0; iceFlash = 0;
+  allWaves = buildWaves(); initCooldowns();
+  lawnmowers = [];
+  for(let r=0;r<ROWS;r++) lawnmowers.push({row:r, x:GX-45, activated:false});
+  betweenWaves = 120; waveDelay = 0;
+}
+
+// ========== DRAW: MENU ==========
+function drawMenu() {
+  drawBackground();
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.fillRect(0,0,W,H);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#c060a0'; ctx.font = 'bold 52px sans-serif';
+  ctx.fillText('Plants vs Zombies', W/2, H/2-100);
+  ctx.fillStyle = '#80c8a0'; ctx.font = '24px sans-serif';
+  ctx.fillText('( Night Mode )', W/2, H/2-60);
+
+  // All 7 mushrooms in a row
+  let mx = W/2 - 195;
+  let shrooms = ['peashroom','sunshroom','puffshroom','fumeshroom','magnetshroom','doomshroom','icemushroom'];
+  shrooms.forEach((key, i) => {
+    ctx.save(); ctx.translate(mx + i*65, H/2+5); ctx.scale(0.9,0.9);
+    switch(key) {
+      case 'peashroom': drawPeashroom(0,0,frame); break;
+      case 'sunshroom': drawSunshroom(0,0,frame,1); break;
+      case 'puffshroom': drawPuffshroom(0,0,frame); break;
+      case 'fumeshroom': drawFumeshroom(0,0,frame); break;
+      case 'magnetshroom': drawMagnetshroom(0,0,frame); break;
+      case 'doomshroom': drawDoomshroom(0,0,frame); break;
+      case 'icemushroom': drawIcemushroom(0,0,frame); break;
+    }
+    ctx.restore();
+  });
+
+  let blink = Math.sin(frame*0.06)*0.4+0.6;
+  ctx.fillStyle = `rgba(220,255,220,${blink})`;
+  ctx.font = '20px sans-serif';
+  ctx.fillText('Click anywhere to start', W/2, H/2+78);
+  ctx.fillStyle = '#668'; ctx.font = '12px sans-serif';
+  ctx.fillText('Left-click cards to select, click lawn to plant, right-click to cancel', W/2, H/2+115);
+  ctx.fillText('Sunshrooms = only sun source | Ice-shroom freezes all zombies | Doom-shroom = 5x5 nuke', W/2, H/2+135);
+}
+
+// ========== DRAW: END SCREENS ==========
+function drawEndScreen() {
+  ctx.fillStyle = 'rgba(0,0,0,0.65)';
+  ctx.fillRect(0,0,W,H);
+  ctx.textAlign = 'center';
+  if(state === 'won') {
+    ctx.fillStyle = '#60e080'; ctx.font = 'bold 52px sans-serif';
+    ctx.fillText('SURVIVED THE NIGHT', W/2, H/2-30);
+    ctx.fillStyle = '#a0d8a0'; ctx.font = '22px sans-serif';
+    ctx.fillText('All waves cleared!', W/2, H/2+10);
+  } else {
+    ctx.fillStyle = '#e04040'; ctx.font = 'bold 48px sans-serif';
+    ctx.fillText('THE ZOMBIES ATE YOUR BRAINS', W/2, H/2-30);
+  }
+  ctx.fillStyle = '#ffe830'; ctx.font = '24px sans-serif';
+  ctx.fillText('Score: ' + score, W/2, H/2+55);
+  let blink = Math.sin(frame*0.06)*0.4+0.6;
+  ctx.fillStyle = `rgba(200,200,200,${blink})`; ctx.font = '18px sans-serif';
+  ctx.fillText('Click to return to menu', W/2, H/2+95);
+}
+
+// ========== MAIN LOOP ==========
+function update() {
+  if(state !== 'playing') return;
+  frame++;
+  updatePlants();
+  updateZombies();
+  updateProjectiles();
+  updateSuns();
+  updateLawnmowers();
+  updateWaves();
+  updateParticles();
+  updateScorchMarks();
+  if(screenFlash > 0) screenFlash--;
+  if(iceFlash > 0) iceFlash--;
+}
+
+function draw() {
+  ctx.clearRect(0,0,W,H);
+  if(state === 'menu') { drawMenu(); frame++; return; }
+
+  drawBackground();
+  drawScorchMarks();
+  lawnmowers.forEach(lm => drawLawnmower(lm));
+  plants.forEach(p => drawMushroom(p));
+  projectiles.forEach(p => drawProjectile(p));
+  zombies.forEach(z => { if(z.hp>0) drawZombie(z); });
+  drawSuns();
+  drawParticles();
+
+  // Draw expanding frost rings
+  particles.forEach(p => {
+    if(p.ring) {
+      p.ringR += p.ringSpeed;
+      let alpha = (p.life / p.maxLife) * 0.4;
+      ctx.strokeStyle = `rgba(140,210,255,${alpha})`;
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.ringR, 0, 6.28); ctx.stroke();
+    }
+  });
+
+  // Doom flash
+  if(screenFlash > 0) {
+    let alpha = (screenFlash / 25) * 0.6;
+    ctx.fillStyle = `rgba(255,120,20,${alpha})`;
+    ctx.fillRect(0,0,W,H);
+    let vg = ctx.createRadialGradient(W/2,H/2,W*0.2,W/2,H/2,W*0.7);
+    vg.addColorStop(0, 'rgba(255,80,0,0)');
+    vg.addColorStop(1, `rgba(255,40,0,${alpha*0.5})`);
+    ctx.fillStyle = vg; ctx.fillRect(0,0,W,H);
+  }
+  // Ice flash
+  if(iceFlash > 0) {
+    let alpha = (iceFlash / 30) * 0.45;
+    ctx.fillStyle = `rgba(140,210,255,${alpha})`;
+    ctx.fillRect(0,0,W,H);
+    let vg = ctx.createRadialGradient(W/2,H/2,W*0.15,W/2,H/2,W*0.65);
+    vg.addColorStop(0, 'rgba(200,240,255,0)');
+    vg.addColorStop(1, `rgba(100,180,240,${alpha*0.4})`);
+    ctx.fillStyle = vg; ctx.fillRect(0,0,W,H);
+  }
+
+  drawUI();
+  if(state === 'won' || state === 'lost') drawEndScreen();
+}
+
+function gameLoop() { update(); draw(); requestAnimationFrame(gameLoop); }
+gameLoop();
+</script>
+</body>
+</html>
+
